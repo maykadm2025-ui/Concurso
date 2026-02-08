@@ -6,6 +6,7 @@
     <title>Norte Apostilas | Referência em Apostilas para Prefeituras</title>
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
+        /* ... (mantém todo o CSS igual) ... */
         :root {
             --primary: #00ff00;
             --secondary: #39ff14;
@@ -102,7 +103,6 @@
             padding: 0 20px 20px 20px; 
         }
 
-        /* NOVO MENU MELHORADO */
         .tabs { 
             display: flex; 
             gap: 0; 
@@ -171,7 +171,6 @@
        
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
        
-        /* Desktop: 3 colunas */
         .boloes-grid { 
             display: grid; 
             grid-template-columns: repeat(3, 1fr);
@@ -210,21 +209,25 @@
             position: relative;
         }
        
+        /* OTIMIZAÇÃO: Lazy loading de imagens */
         .imagem-bolao {
             width: 80%;
             max-height: 300px;
             border-radius: 12px;
             object-fit: cover;
+            /* Remove loading="lazy" do HTML e adiciona aqui */
+            loading: lazy;
         }
         
+        /* REMOVIDO: autoplay de vídeos - causa lentidão */
         video.imagem-bolao {
             width: 80%;
             max-height: 300px;
             border-radius: 12px;
             object-fit: cover;
+            /* SEM autoplay, SEM loop */
         }
         
-        /* Badge de preço */
         .badge-preco {
             position: absolute;
             top: 10px;
@@ -241,7 +244,6 @@
             animation: neonGlow 2s infinite alternate;
         }
         
-        /* Nova seção de vendas */
         .vendas-container {
             text-align: center;
             margin: 5px 0;
@@ -295,7 +297,6 @@
         .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px; }
         .modal-title { font-size: 24px; font-weight: 600; background: linear-gradient(45deg, var(--primary), var(--secondary)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
         
-        /* Ocultar título e botão de fechar do modal de detalhes no desktop */
         #modal-detalhes .modal-title {
             display: none;
         }
@@ -304,7 +305,6 @@
             display: none;
         }
         
-        /* Aproximar mídia do topo no desktop */
         #modal-detalhes .modal-header {
             margin-bottom: 5px;
         }
@@ -312,7 +312,6 @@
         .close-modal { background: none; border: none; font-size: 28px; cursor: pointer; color: #555555; }
         .close-modal:hover { color: #000000; }
        
-        /* ESTILOS PARA IMAGEM E VÍDEO NO MODAL DE DETALHES */
         .container-imagem-detalhes {
             display: grid;
             grid-template-columns: 1fr;
@@ -322,7 +321,6 @@
             gap: 20px;
         }
 
-        /* Default: quando há apenas UMA mídia (imagem OU vídeo) - CENTRALIZADA */
         .container-imagem-detalhes .imagem-detalhes,
         .container-imagem-detalhes video.imagem-detalhes {
             width: 80%;
@@ -333,7 +331,6 @@
             box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
         }
 
-        /* Quando há DUAS mídias (imagem E vídeo) - desktop lado a lado */
         .container-imagem-detalhes.has-two-media {
             grid-template-columns: 1fr 1fr;
             gap: 20px;
@@ -367,7 +364,6 @@
             text-align: justify;
         }
 
-        /* Modal PIX */
         .pix-modal .modal-content {
             max-width: 500px;
         }
@@ -448,7 +444,6 @@
             box-shadow: 0 5px 15px rgba(255, 0, 0, 0.4);
         }
        
-        /* Mobile 2 colunas, Desktop 3 colunas */
         @media (max-width: 1024px) {
             .boloes-grid { 
                 grid-template-columns: repeat(2, 1fr); 
@@ -456,7 +451,6 @@
             }
         }
        
-        /* Mobile: ajustes gerais */
         @media (max-width: 768px) {
             header {
                 min-height: 260px;
@@ -545,7 +539,6 @@
                 right: 6px;
             }
             
-            /* BOTÕES MENORES NO MOBILE - AJUSTADOS */
             .bolao-actions {
                 gap: 6px;
                 margin-top: 8px;
@@ -560,7 +553,6 @@
                 white-space: nowrap;
             }
             
-            /* MENU MOBILE MELHORADO */
             .tabs {
                 gap: 4px;
                 padding: 5px;
@@ -593,15 +585,11 @@
                 margin-bottom: 15px;
             }
             
-            /* MOBILE: Ocultar título e botão de fechar do modal de detalhes - já definido no desktop */
-            
-            /* MOBILE: Aproximar ainda mais mídia do topo */
             #modal-detalhes .container-imagem-detalhes {
                 margin-bottom: 20px;
                 margin-top: 0;
             }
             
-            /* MOBILE: Grid para centralização perfeita */
             .container-imagem-detalhes {
                 display: grid !important;
                 grid-template-columns: 1fr !important;
@@ -609,14 +597,12 @@
                 gap: 20px !important;
             }
             
-            /* MOBILE: Quando há apenas UMA mídia - CENTRALIZADA com 80% (igual desktop) */
             .container-imagem-detalhes:not(.has-two-media) .imagem-detalhes,
             .container-imagem-detalhes:not(.has-two-media) video.imagem-detalhes {
                 width: 80% !important;
                 max-width: 80% !important;
             }
             
-            /* MOBILE: Quando há DUAS mídias - lado a lado */
             .container-imagem-detalhes.has-two-media {
                 grid-template-columns: 1fr 1fr !important;
                 gap: 10px !important;
@@ -640,11 +626,11 @@
 <body>
     <header>
         <div class="logo">
-            <!-- Logotipo responsivo: logo1.png no mobile, logo.png no desktop -->
             <picture>
                 <source media="(max-width: 768px)" srcset="https://dkgzrqbzotwrskdmjxbw.supabase.co/storage/v1/object/public/logos/logo1.png">
                 <img src="https://dkgzrqbzotwrskdmjxbw.supabase.co/storage/v1/object/public/logos/logo.png" 
-                     alt="Norte Apostilas - O Caminho Certo para Sua Aprovação">
+                     alt="Norte Apostilas - O Caminho Certo para Sua Aprovação"
+                     loading="eager">
             </picture>
         </div>
 
@@ -695,7 +681,7 @@
         </div>
     </div>
 
-    <!-- Modal Login -->
+    <!-- Modais (mantidos iguais) -->
     <div id="modal-login" class="modal">
         <div class="modal-content">
             <div class="modal-header">
@@ -718,7 +704,6 @@
         </div>
     </div>
    
-    <!-- Modal Registro -->
     <div id="modal-register" class="modal">
         <div class="modal-content">
             <div class="modal-header">
@@ -749,7 +734,6 @@
         </div>
     </div>
    
-    <!-- Modal CPF -->
     <div id="modal-cpf" class="modal cpf-modal">
         <div class="modal-content">
             <div class="modal-header">
@@ -769,7 +753,6 @@
         </div>
     </div>
    
-    <!-- Modal PIX -->
     <div id="modal-pix" class="modal pix-modal">
         <div class="modal-content">
             <div class="modal-header">
@@ -801,7 +784,6 @@
         </div>
     </div>
 
-    <!-- Modal Detalhes -->
     <div id="modal-detalhes" class="modal">
         <div class="modal-content">
             <div class="modal-header">
@@ -967,6 +949,7 @@
             });
         }
 
+        // ===== OTIMIZAÇÃO PRINCIPAL: carregarBoloes() mais rápido =====
         async function carregarBoloes() {
             const loader = document.getElementById('boloes-loader');
             const grid = document.getElementById('boloes-grid');
@@ -974,7 +957,14 @@
             if (loader) loader.style.display = 'block';
             
             try {
-                const response = await fetch('/api/boloes');
+                // Adiciona timeout para detectar respostas lentas
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 segundos
+                
+                const response = await fetch('/api/boloes', {
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
                 
                 if (!response.ok) {
                     throw new Error(`Erro HTTP: ${response.status}`);
@@ -993,7 +983,7 @@
                 grid.innerHTML = `
                     <div style="text-align: center; padding: 60px; color: #ff0000;">
                         <h3>Erro ao carregar concursos</h3>
-                        <p>Verifique sua conexão e tente novamente.</p>
+                        <p>${error.name === 'AbortError' ? 'Tempo limite excedido' : 'Verifique sua conexão'}</p>
                         <button class="btn btn-primary" onclick="carregarBoloes()" style="margin-top: 20px;">Tentar novamente</button>
                     </div>
                 `;
@@ -1002,6 +992,7 @@
             }
         }
 
+        // ===== OTIMIZAÇÃO: renderizarBoloes sem autoplay de vídeo =====
         function renderizarBoloes(listaBoloes) {
             const grid = document.getElementById('boloes-grid');
             if (!grid) return;
@@ -1023,11 +1014,14 @@
                 
                 const vendidos = bolao.vendidos || 100;
                 
+                // ===== CORREÇÃO CRÍTICA: Remover autoplay, loop e muted de vídeos =====
                 let mediaHTML = '';
                 if (bolao.video_url) {
-                    mediaHTML = `<video src="${bolao.video_url}" class="imagem-bolao" controls muted loop autoplay playsinline></video>`;
+                    // SEM autoplay, loop, muted - só controls
+                    mediaHTML = `<video src="${bolao.video_url}" class="imagem-bolao" controls preload="metadata"></video>`;
                 } else if (bolao.imagem_url) {
-                    mediaHTML = `<img src="${bolao.imagem_url}" alt="${bolao.nome}" class="imagem-bolao">`;
+                    // Lazy loading nas imagens
+                    mediaHTML = `<img src="${bolao.imagem_url}" alt="${bolao.nome}" class="imagem-bolao" loading="lazy">`;
                 }
                 
                 card.innerHTML = `
@@ -1086,31 +1080,20 @@
                             
             const totalMedia = (hasImage ? 1 : 0) + (hasVideo ? 1 : 0);
             
-            console.log('=== DEBUG MODAL DETALHES ===');
-            console.log('Bolão:', bolao.nome);
-            console.log('imagem_url RAW:', bolao.imagem_url);
-            console.log('video_url RAW:', bolao.video_url);
-            console.log('hasImage:', hasImage);
-            console.log('hasVideo:', hasVideo);
-            console.log('totalMedia:', totalMedia);
-            
             if (totalMedia > 0) {
                 if (totalMedia === 2) {
                     containerClass += ' has-two-media';
                 }
                 
-                console.log('containerClass:', containerClass);
-                
                 mediaHTML += `<div class="${containerClass}">`;
                 
                 if (hasImage) {
-                    console.log('Adicionando imagem:', bolao.imagem_url);
-                    mediaHTML += `<img src="${bolao.imagem_url}" alt="${bolao.nome}" class="imagem-detalhes">`;
+                    mediaHTML += `<img src="${bolao.imagem_url}" alt="${bolao.nome}" class="imagem-detalhes" loading="lazy">`;
                 }
                 
                 if (hasVideo) {
-                    console.log('Adicionando vídeo:', bolao.video_url);
-                    mediaHTML += `<video src="${bolao.video_url}" class="imagem-detalhes" controls muted loop autoplay playsinline></video>`;
+                    // SEM autoplay, loop, muted - apenas controls
+                    mediaHTML += `<video src="${bolao.video_url}" class="imagem-detalhes" controls preload="metadata"></video>`;
                 }
                 
                 mediaHTML += '</div>';
@@ -1135,9 +1118,6 @@
                     </div>
                 `;
             }
-            
-            console.log('HTML final gerado:', detalhesHTML);
-            console.log('========================');
             
             document.getElementById('detalhes-conteudo').innerHTML = detalhesHTML;
             document.getElementById('modal-detalhes').classList.add('active');
