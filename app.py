@@ -6,11 +6,18 @@ import jwt
 import datetime
 import re
 import json
+import logging
+from urllib.parse import urlparse
 from flask import Flask, render_template, request, jsonify, session, abort, send_from_directory
 from flask_cors import CORS
 from functools import wraps
 from werkzeug.utils import secure_filename
 
+# Configuração de logging para Render
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Configuração para Render
 base_dir = os.path.dirname(os.path.abspath(__file__))
 template_dir = os.path.join(base_dir, 'templates')
 static_dir = os.path.join(base_dir, 'static')
@@ -20,35 +27,56 @@ os.makedirs(static_dir, exist_ok=True)
 os.makedirs(imagens_dir, exist_ok=True)
 
 app = Flask(__name__, template_folder=template_dir, static_folder=static_dir)
-app.secret_key = 'lotomaster_sistema_boloes_2024_seguro'
+
+# NO RENDER: Use variável de ambiente para secret_key
+app.secret_key = os.environ.get('SECRET_KEY', 'lotomaster_sistema_boloes_2024_seguro')
 app.config['UPLOAD_FOLDER'] = imagens_dir
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 CORS(app, supports_credentials=True)
 
-# Configuração do Banco de Dados
-DB_CONFIG = {
-    "host": "aws-1-sa-east-1.pooler.supabase.com",
-    "port": 5432,
-    "database": "postgres",
-    "user": "postgres.dkgzrqbzotwrskdmjxbw",
-    "password": "786*&%Mauq1",
-    "sslmode": "require"
-}
-
+# ============================================
+# CONEXÃO COM BANCO - ADAPTADA PARA RENDER
+# ============================================
 def get_db_connection():
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
+        # NO RENDER: Use DATABASE_URL da variável de ambiente
+        database_url = os.environ.get('DATABASE_URL')
+        
+        if database_url:
+            # Para conexões do Render/Supabase
+            url = urlparse(database_url)
+            conn = psycopg2.connect(
+                database=url.path[1:],
+                user=url.username,
+                password=url.password,
+                host=url.hostname,
+                port=url.port,
+                sslmode='require'
+            )
+        else:
+            # Fallback para sua conexão local (para desenvolvimento)
+            conn = psycopg2.connect(
+                host="aws-1-sa-east-1.pooler.supabase.com",
+                port=5432,
+                database="postgres",
+                user="postgres.dkgzrqbzotwrskdmjxbw",
+                password="786*&%Mauq1",
+                sslmode="require"
+            )
         return conn
     except Exception as e:
-        print(f"Erro na conexão com o banco: {str(e)}")
+        logger.error(f"Erro na conexão com o banco: {str(e)}")
         return None
 
-# Mercado Pago
-ACCESS_TOKEN = "APP_USR-6894468649991242-122722-f91f76096569c694ed26cc237ebd084c-3097500632"
+# ============================================
+# MERCADO PAGO - ADAPTADO PARA RENDER
+# ============================================
+# NO RENDER: Use variável de ambiente para o token
+ACCESS_TOKEN = os.environ.get('MERCADO_PAGO_ACCESS_TOKEN', 'APP_USR-6894468649991242-122722-f91f76096569c694ed26cc237ebd084c-3097500632')
 sdk = mercadopago.SDK(ACCESS_TOKEN)
 
 # ============================================
-# FUNÇÕES AUXILIARES
+# FUNÇÕES AUXILIARES (PERMANECEM IGUAIS)
 # ============================================
 def criar_token(usuario_id):
     payload = {
@@ -63,7 +91,7 @@ def verificar_token(token):
         payload = jwt.decode(token, app.secret_key, algorithms=["HS256"])
         return payload.get('user_id')
     except Exception as e:
-        print(f"Erro ao verificar token: {str(e)}")
+        logger.error(f"Erro ao verificar token: {str(e)}")
         return None
 
 def validar_cpf(cpf):
@@ -142,14 +170,13 @@ def atualizar_cpf_usuario(usuario_id, cpf):
         conn.close()
 
 # ============================================
-# MIDDLEWARE DE AUTENTICAÇÃO - CORRIGIDO
+# MIDDLEWARE DE AUTENTICAÇÃO
 # ============================================
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         token = None
         
-        # Tenta obter o token de várias fontes
         try:
             if 'Authorization' in request.headers and request.headers['Authorization'].startswith('Bearer '):
                 token = request.headers['Authorization'].split(" ")[1]
@@ -173,7 +200,7 @@ def token_required(f):
             return f(*args, **kwargs)
             
         except Exception as e:
-            print(f"Erro no token_required: {str(e)}")
+            logger.error(f"Erro no token_required: {str(e)}")
             return jsonify({'success': False, 'error': 'Erro de autenticação'}), 500
     
     return decorated
@@ -200,11 +227,11 @@ def salvar_media(file):
 # INICIALIZAÇÃO DO BANCO
 # ============================================
 def verificar_e_corrigir_banco():
-    print("Verificando estrutura do banco de dados...")
+    logger.info("Verificando estrutura do banco de dados...")
     
     conn = get_db_connection()
     if not conn:
-        print("Não foi possível conectar ao banco")
+        logger.error("Não foi possível conectar ao banco")
         return False
     
     try:
@@ -281,13 +308,13 @@ def verificar_e_corrigir_banco():
                 WHERE table_name='boloes' AND column_name='{coluna}'
             """)
             if not cur.fetchone():
-                print(f"Adicionando coluna '{coluna}' à tabela 'boloes'...")
+                logger.info(f"Adicionando coluna '{coluna}' à tabela 'boloes'...")
                 cur.execute(f"ALTER TABLE boloes ADD COLUMN {coluna} {tipo}")
         
         # Inserir bolões de exemplo se tabela vazia
         cur.execute("SELECT COUNT(*) FROM boloes")
         if cur.fetchone()[0] == 0:
-            print("Criando bolões de exemplo...")
+            logger.info("Criando bolões de exemplo...")
             cur.execute("""
                 INSERT INTO boloes (nome, cotas_totais, imagem_url, detalhes, preco) 
                 VALUES ('Concurso Exemplo Prefeitura', 100, '/static/imagens_boloes/default.jpg', 'Apostila completa para concurso de prefeitura.', 1.00)
@@ -299,7 +326,7 @@ def verificar_e_corrigir_banco():
         cur.execute("CREATE INDEX IF NOT EXISTS idx_compras_order_id ON compras(order_id);")
         
         # Usuário admin
-        admin_hash = '$2b$12$4o5vzJ/1S7LSj7nEzShnQezVzPVcmzqcLskSkwoUPvOI6AYO1SFEK'
+        admin_hash = bcrypt.hashpw(b'admin123', bcrypt.gensalt()).decode('utf-8')
         cur.execute("""
             INSERT INTO usuarios (email, senha, nome, cpf, is_admin, data_criacao)
             VALUES ('admin@lotomaster.com', %s, 'Administrador', '00000000000', TRUE, NOW())
@@ -310,12 +337,12 @@ def verificar_e_corrigir_banco():
         
         conn.commit()
         cur.close()
-        print("Banco verificado e admin garantido!")
+        logger.info("Banco verificado e admin garantido!")
         return True
         
     except Exception as e:
         conn.rollback()
-        print(f"Erro ao verificar banco: {str(e)}")
+        logger.error(f"Erro ao verificar banco: {str(e)}")
         return False
     finally:
         conn.close()
@@ -367,7 +394,7 @@ def registrar():
         finally:
             conn.close()
     except Exception as e:
-        print(f"Erro no registro: {str(e)}")
+        logger.error(f"Erro no registro: {str(e)}")
         return jsonify({'success': False, 'error': 'Erro interno'}), 500
 
 @app.route('/api/login', methods=['POST'])
@@ -399,7 +426,7 @@ def login():
             }
         })
     except Exception as e:
-        print(f"Erro no login: {str(e)}")
+        logger.error(f"Erro no login: {str(e)}")
         return jsonify({'success': False, 'error': 'Erro interno'}), 500
 
 @app.route('/api/salvar-cpf', methods=['POST'])
@@ -468,7 +495,7 @@ def listar_boloes():
         return jsonify({'success': True, 'boloes': boloes_list})
     
     except Exception as e:
-        print(f"Erro na rota /api/boloes: {str(e)}")
+        logger.error(f"Erro na rota /api/boloes: {str(e)}")
         return jsonify({'success': False, 'error': 'Erro interno no servidor'}), 500
     finally:
         conn.close()
@@ -569,7 +596,7 @@ def checkout():
             "valor": total
         })
     except Exception as e:
-        print(f"ERRO NO CHECKOUT: {str(e)}")
+        logger.error(f"ERRO NO CHECKOUT: {str(e)}")
         return jsonify({"success": False, "error": "Erro interno"}), 500
 
 @app.route('/api/status/<order_id>')
@@ -640,7 +667,7 @@ def check_status(order_id):
         finally:
             conn.close()
     except Exception as e:
-        print(f"Erro ao verificar status: {str(e)}")
+        logger.error(f"Erro ao verificar status: {str(e)}")
         return jsonify({"success": False, "error": "Erro ao verificar"}), 500
 
 @app.route('/api/compras-usuario', methods=['GET'])
@@ -653,7 +680,6 @@ def compras_usuario():
         
         try:
             cur = conn.cursor()
-            # Query simplificada sem o LEFT JOIN problemático
             cur.execute("""
                 SELECT order_id, valor, status, data_compra, descricao, quantidade
                 FROM compras 
@@ -665,11 +691,9 @@ def compras_usuario():
             compras = []
             
             for row in rows:
-                # Extrair nome do bolão da descrição
                 descricao = row[4] or 'Apostila'
                 bolao_nome = descricao.split(' - ')[0] if ' - ' in descricao else descricao
                 
-                # Buscar PDF do bolão correspondente
                 pdf_url = None
                 try:
                     cur.execute("SELECT pdf_url FROM boloes WHERE nome = %s", (bolao_nome,))
@@ -677,7 +701,7 @@ def compras_usuario():
                     if pdf_result:
                         pdf_url = pdf_result[0]
                 except Exception as e:
-                    print(f"Erro ao buscar PDF: {e}")
+                    logger.error(f"Erro ao buscar PDF: {e}")
                 
                 compras.append({
                     'order_id': row[0],
@@ -695,9 +719,7 @@ def compras_usuario():
             conn.close()
     
     except Exception as e:
-        print(f"Erro ao carregar compras: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"Erro ao carregar compras: {str(e)}")
         return jsonify({'success': False, 'error': f'Erro interno: {str(e)}'}), 500
 
 # ============================================
@@ -782,7 +804,7 @@ def admin_criar_bolao():
                     os.remove(os.path.join(app.config['UPLOAD_FOLDER'], filename))
                 except:
                     pass
-        print(f"Erro ao criar bolão: {e}")
+        logger.error(f"Erro ao criar bolão: {e}")
         return jsonify({'success': False, 'error': 'Erro ao salvar concurso'}), 500
     finally:
         conn.close()
@@ -824,7 +846,7 @@ def admin_listar_boloes():
         
         return jsonify({'success': True, 'boloes': boloes})
     except Exception as e:
-        print(f"Erro ao listar bolões admin: {e}")
+        logger.error(f"Erro ao listar bolões admin: {e}")
         return jsonify({'success': False, 'error': 'Erro interno'}), 500
     finally:
         conn.close()
@@ -881,7 +903,7 @@ def admin_editar_bolao():
                         old_file = current_imagem.split('/')[-1]
                         os.remove(os.path.join(app.config['UPLOAD_FOLDER'], old_file))
                     except Exception as e:
-                        print(f"Erro ao remover imagem antiga: {e}")
+                        logger.error(f"Erro ao remover imagem antiga: {e}")
 
         if 'video' in request.files and request.files['video'].filename != '':
             nova = salvar_media(request.files['video'])
@@ -892,7 +914,7 @@ def admin_editar_bolao():
                         old_file = current_video.split('/')[-1]
                         os.remove(os.path.join(app.config['UPLOAD_FOLDER'], old_file))
                     except Exception as e:
-                        print(f"Erro ao remover vídeo antigo: {e}")
+                        logger.error(f"Erro ao remover vídeo antigo: {e}")
 
         if 'pdf' in request.files and request.files['pdf'].filename != '':
             file = request.files['pdf']
@@ -905,7 +927,7 @@ def admin_editar_bolao():
                             old_file = current_pdf.split('/')[-1]
                             os.remove(os.path.join(app.config['UPLOAD_FOLDER'], old_file))
                         except Exception as e:
-                            print(f"Erro ao remover PDF antigo: {e}")
+                            logger.error(f"Erro ao remover PDF antigo: {e}")
 
         if not nova_imagem_url and not nova_video_url:
             return jsonify({'success': False, 'error': 'É necessário ter pelo menos uma imagem ou vídeo'}), 400
@@ -930,7 +952,7 @@ def admin_editar_bolao():
         
     except Exception as e:
         conn.rollback()
-        print(f"Erro ao editar bolão: {e}")
+        logger.error(f"Erro ao editar bolão: {e}")
         return jsonify({'success': False, 'error': 'Erro ao atualizar concurso'}), 500
     finally:
         conn.close()
@@ -976,7 +998,7 @@ def admin_atualizar_vendidos():
         
     except Exception as e:
         conn.rollback()
-        print(f"Erro ao atualizar vendidos: {e}")
+        logger.error(f"Erro ao atualizar vendidos: {e}")
         return jsonify({'success': False, 'error': 'Erro ao atualizar vendidos'}), 500
     finally:
         conn.close()
@@ -1014,7 +1036,7 @@ def admin_remover_bolao(bolao_id):
                     if os.path.exists(filepath):
                         os.remove(filepath)
                 except Exception as e:
-                    print(f"Erro ao remover arquivo: {e}")
+                    logger.error(f"Erro ao remover arquivo: {e}")
         
         conn.commit()
         
@@ -1022,7 +1044,7 @@ def admin_remover_bolao(bolao_id):
         
     except Exception as e:
         conn.rollback()
-        print(f"Erro ao remover bolão: {e}")
+        logger.error(f"Erro ao remover bolão: {e}")
         return jsonify({'success': False, 'error': 'Erro ao remover concurso'}), 500
     finally:
         conn.close()
@@ -1102,7 +1124,7 @@ def corrigir_cotas():
         
     except Exception as e:
         conn.rollback()
-        print(f"Erro ao corrigir cotas: {e}")
+        logger.error(f"Erro ao corrigir cotas: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
         conn.close()
@@ -1137,16 +1159,29 @@ def teste_db():
     conn.close()
     return f"Conectado! Versão: {version}"
 
-if __name__ == '__main__':
-    print("=== NORTE APOSTILAS - SISTEMA DE VENDAS ===")
-    print("Verificando estrutura do banco de dados...")
+# ============================================
+# INICIALIZAÇÃO DO APLICATIVO
+# ============================================
+
+def inicializar_aplicacao():
+    logger.info("=== NORTE APOSTILAS - SISTEMA DE VENDAS ===")
+    logger.info("Verificando estrutura do banco de dados...")
     if verificar_e_corrigir_banco():
-        print("Banco de dados verificado e corrigido com sucesso!")
+        logger.info("Banco de dados verificado e corrigido com sucesso!")
     else:
-        print("Aviso: Houve problemas ao verificar o banco de dados.")
+        logger.warning("Aviso: Houve problemas ao verificar o banco de dados.")
     
-    print("Servidor rodando em http://localhost:5000")
-    print("Painel Admin: http://localhost:5000/admin")
-    print("Login Admin: admin@lotomaster.com / senha: admin123")
-    app.run(debug=True, host='0.0.0.0', port=5000)
-    
+    logger.info("Aplicação inicializada com sucesso!")
+    logger.info("Login Admin: admin@lotomaster.com / senha: admin123")
+
+# Inicializar ao iniciar a aplicação
+inicializar_aplicacao()
+
+# ============================================
+# PONTO DE ENTRADA PARA RENDER
+# ============================================
+if __name__ == '__main__':
+    # NO RENDER: Use a porta da variável de ambiente
+    port = int(os.environ.get('PORT', 5000))
+    # NO RENDER: debug deve ser False
+    app.run(debug=False, host='0.0.0.0', port=port)
