@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Norte Apostilas | Painel Administrador</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        body { 
+            font-family: 'Poppins', sans-serif; 
+            background: #f8f9fa; 
+            color: #000; 
+        }
+        .navbar { 
+            background: linear-gradient(45deg, #00ff00, #39ff14); 
+            padding: 1rem 0; 
+        }
+        .card { 
+            border: 2px solid #00ff00; 
+            box-shadow: 0 50px 20px rgba(0,255,0,0.2); 
+            border-radius: 15px; 
+        }
+        .table th { 
+            background: #00ff00; 
+            color: #000; 
+            font-weight: 600; 
+        }
+        .btn-success { 
+            background: #00ff00; 
+            border: none; 
+            color: #000; 
+            font-weight: bold; 
+        }
+        .btn-success:hover { 
+            background: #39ff14; 
+            color: #000; 
+        }
+        .btn-warning { 
+            background: #ffff00; 
+            color: #000; 
+            border: none; 
+        }
+        .btn-danger { 
+            background: #ff0000; 
+            color: #fff; 
+            border: none; 
+        }
+        .form-control:focus { border-color: #00ff00; box-shadow: 0 0 0 0.2rem rgba(0,255,0,.25); }
+        #msg-criacao, #msg-edicao { font-weight: bold; }
+        .imagem-preview, .video-preview {
+            max-width: 100%;
+            max-height: 300px;
+            width: auto;
+            height: auto;
+            border-radius: 8px;
+            border: 1px solid #cccccc;
+            object-fit: contain;
+        }
+        .detalhes-textarea {
+            min-height: 120px;
+            resize: vertical;
+        }
+        .vendidos-input {
+            width: 80px;
+            display: inline-block;
+            text-align: center;
+        }
+        .btn-save-vendidos {
+            padding: 2px 8px;
+            font-size: 12px;
+            margin-left: 5px;
+        }
+        .media-preview-container {
+            margin-top: 10px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-dark">
+        <div class="container-fluid">
+            <span class="navbar-brand mb-0 h1">🔐 Painel Administrador - Norte Apostilas</span>
+            <button class="btn btn-dark" onclick="window.location.href='/'">← Voltar ao Site</button>
+        </div>
+    </nav>
+
+    <div class="container mt-5">
+        <!-- Criar Novo Concurso -->
+        <div class="card mb-5">
+            <div class="card-header bg-success text-black">
+                <h4 class="mb-0">Criar Novo Concurso</h4>
+            </div>
+            <div class="card-body">
+                <form id="form-criar-bolao" enctype="multipart/form-data">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Nome do Concurso</label>
+                            <input type="text" id="nome-bolao" class="form-control" placeholder="Ex: Concurso Prefeitura 2026" required>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Vendidos (opcional)</label>
+                            <input type="number" id="vendidos-bolao" class="form-control" value="100" min="0" max="1000">
+                            <small class="text-muted">Quantidade exibida como vendidos no site</small>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Preço (R$)</label>
+                            <input type="number" id="preco-bolao" class="form-control" value="1.00" min="0.01" step="0.01">
+                            <small class="text-muted">Valor por unidade</small>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Imagem do Concurso (opcional)</label>
+                            <input type="file" id="imagem-bolao" class="form-control" accept="image/*" onchange="previewImagemCriar(event)">
+                            <small class="text-muted">JPG, PNG, GIF, WEBP – máx. 50MB</small>
+                            <div id="imagem-preview-container" class="media-preview-container" style="display: none;">
+                                <img id="imagem-preview" class="imagem-preview" src="" alt="Preview Imagem">
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Vídeo do Concurso (opcional)</label>
+                            <input type="file" id="video-bolao" class="form-control" accept="video/*" onchange="previewVideoCriar(event)">
+                            <small class="text-muted">MP4, WEBM, OGG – máx. 50MB</small>
+                            <div id="video-preview-container" class="media-preview-container" style="display: none;">
+                                <video id="video-preview" class="video-preview" controls></video>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">PDF da Apostila (opcional)</label>
+                            <input type="file" id="pdf-bolao" class="form-control" accept=".pdf">
+                            <small class="text-muted">PDF da apostila - máx. 50MB</small>
+                            <div id="pdf-preview-container" class="media-preview-container" style="display: none;">
+                                <div class="alert alert-info">
+                                    <i class="bi bi-file-pdf"></i> PDF selecionado
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">Detalhes do Concurso</label>
+                            <textarea id="detalhes-bolao" class="form-control detalhes-textarea" 
+                                      placeholder="Descreva os detalhes do concurso: conteúdo da apostila, edital, etc."></textarea>
+                            <small class="text-muted">Use linhas separadas para parágrafos.</small>
+                        </div>
+                        <div class="col-md-3 align-self-end">
+                            <button type="button" class="btn btn-success w-100" onclick="criarBolao()">Criar Concurso</button>
+                        </div>
+                    </div>
+                </form>
+                <div id="msg-criacao" class="mt-3"></div>
+            </div>
+        </div>
+
+        <!-- Lista de Concursos Existentes -->
+        <div class="card mb-5">
+            <div class="card-header bg-success text-black">
+                <h4 class="mb-0">Concursos Existentes (Editar / Remover)</h4>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Nome</th>
+                                <th>Mídia</th>
+                                <th>Cotas Totais</th>
+                                <th>Cotas Vendidas</th>
+                                <th>Vendidos</th>
+                                <th>Preço</th>
+                                <th>Detalhes</th>
+                                <th>Ações</th>
+                            </tr>
+                        </thead>
+                        <tbody id="boloes-tbody">
+                            <!-- Preenchido via JavaScript -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Todas as Compras -->
+        <div class="card">
+            <div class="card-header bg-success text-black">
+                <h3 class="mb-0">Todas as Compras (Todos os Usuários)</h3>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-striped" id="compras-table">
+                        <thead>
+                            <tr>
+                                <th>Data</th>
+                                <th>Usuário</th>
+                                <th>Email</th>
+                                <th>Concurso</th>
+                                <th>Unidades</th>
+                                <th>Valor</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Preenchido via JavaScript -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal Editar Concurso -->
+        <div class="modal fade" id="modalEditarBolao" tabindex="-1">
+            <div class="modal-dialog modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header bg-success text-black">
+                        <h5 class="modal-title">Editar Concurso</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <form id="form-editar-bolao" enctype="multipart/form-data">
+                            <input type="hidden" id="editar-id">
+                            <div class="mb-3">
+                                <label class="form-label">Nome do Concurso</label>
+                                <input type="text" id="editar-nome" class="form-control" required>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Quantidade de Cotas</label>
+                                <input type="number" id="editar-cotas" class="form-control" min="10" required>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Vendidos</label>
+                                <input type="number" id="editar-vendidos" class="form-control" min="0">
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Preço (R$)</label>
+                                <input type="number" id="editar-preco" class="form-control" min="0.01" step="0.01">
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Nova Imagem (opcional)</label>
+                                <input type="file" id="editar-imagem" class="form-control" accept="image/*" onchange="previewImagemEditar(event)">
+                                <div id="imagem-atual-container" class="media-preview-container mt-2"></div>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Novo Vídeo (opcional)</label>
+                                <input type="file" id="editar-video" class="form-control" accept="video/*" onchange="previewVideoEditar(event)">
+                                <div id="video-atual-container" class="media-preview-container mt-2"></div>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Novo PDF da Apostila (opcional)</label>
+                                <input type="file" id="editar-pdf" class="form-control" accept=".pdf">
+                                <div id="pdf-atual-container" class="media-preview-container mt-2"></div>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Detalhes do Concurso</label>
+                                <textarea id="editar-detalhes" class="form-control detalhes-textarea"></textarea>
+                            </div>
+                        </form>
+                        <div id="msg-edicao" class="mt-3"></div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                        <button type="button" class="btn btn-success" onclick="salvarEdicao()">Salvar Alterações</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        let token = localStorage.getItem('token') || urlParams.get('token');
+
+        if (!token) {
+            alert('Acesso negado. Faça login como administrador.');
+            window.location.href = '/';
+        }
+        localStorage.setItem('token', token);
+
+        // Previews para criar
+        function previewImagemCriar(event) {
+            const input = event.target;
+            const container = document.getElementById('imagem-preview-container');
+            const preview = document.getElementById('imagem-preview');
+            if (input.files && input.files[0]) {
+                preview.src = URL.createObjectURL(input.files[0]);
+                container.style.display = 'block';
+            } else {
+                container.style.display = 'none';
+            }
+        }
+
+        function previewVideoCriar(event) {
+            const input = event.target;
+            const container = document.getElementById('video-preview-container');
+            const preview = document.getElementById('video-preview');
+            if (input.files && input.files[0]) {
+                preview.src = URL.createObjectURL(input.files[0]);
+                container.style.display = 'block';
+            } else {
+                container.style.display = 'none';
+            }
+        }
+
+        function previewPDFCriar(event) {
+            const input = event.target;
+            const container = document.getElementById('pdf-preview-container');
+            if (input.files && input.files[0]) {
+                container.style.display = 'block';
+            } else {
+                container.style.display = 'none';
+            }
+        }
+
+        // Previews para editar
+        function previewImagemEditar(event) {
+            const input = event.target;
+            const container = document.getElementById('imagem-atual-container');
+            const preview = document.createElement('img');
+            preview.className = 'imagem-preview';
+            if (input.files && input.files[0]) {
+                preview.src = URL.createObjectURL(input.files[0]);
+                container.innerHTML = '';
+                container.appendChild(preview);
+                container.style.display = 'block';
+            }
+        }
+
+        function previewVideoEditar(event) {
+            const input = event.target;
+            const container = document.getElementById('video-atual-container');
+            const preview = document.createElement('video');
+            preview.className = 'video-preview';
+            preview.controls = true;
+            if (input.files && input.files[0]) {
+                preview.src = URL.createObjectURL(input.files[0]);
+                container.innerHTML = '';
+                container.appendChild(preview);
+                container.style.display = 'block';
+            }
+        }
+
+        function previewPDFEditar(event) {
+            const input = event.target;
+            const container = document.getElementById('pdf-atual-container');
+            if (input.files && input.files[0]) {
+                container.innerHTML = '<div class="alert alert-info"><i class="bi bi-file-pdf"></i> Novo PDF selecionado</div>';
+                container.style.display = 'block';
+            }
+        }
+
+        async function criarBolao() {
+            const nome = document.getElementById('nome-bolao').value.trim();
+            const detalhes = document.getElementById('detalhes-bolao').value.trim();
+            const vendidos = document.getElementById('vendidos-bolao').value.trim();
+            const preco = document.getElementById('preco-bolao').value.trim();
+            const imagemInput = document.getElementById('imagem-bolao');
+            const videoInput = document.getElementById('video-bolao');
+            const pdfInput = document.getElementById('pdf-bolao');
+
+            if (!nome) {
+                document.getElementById('msg-criacao').innerHTML = '<div class="alert alert-danger">Nome é obrigatório</div>';
+                return;
+            }
+
+            if (imagemInput.files.length === 0 && videoInput.files.length === 0) {
+                document.getElementById('msg-criacao').innerHTML = '<div class="alert alert-danger">Adicione pelo menos uma imagem ou vídeo</div>';
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('nome', nome);
+            formData.append('detalhes', detalhes);
+            formData.append('vendidos', vendidos || '100');
+            formData.append('preco', preco || '1.00');
+            if (imagemInput.files.length > 0) formData.append('imagem', imagemInput.files[0]);
+            if (videoInput.files.length > 0) formData.append('video', videoInput.files[0]);
+            if (pdfInput.files.length > 0) formData.append('pdf', pdfInput.files[0]);
+
+            try {
+                const res = await fetch('/api/admin/criar-bolao', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${token}` },
+                    body: formData
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    document.getElementById('msg-criacao').innerHTML = '<div class="alert alert-success">Concurso criado com sucesso!</div>';
+                    document.getElementById('form-criar-bolao').reset();
+                    document.getElementById('imagem-preview-container').style.display = 'none';
+                    document.getElementById('video-preview-container').style.display = 'none';
+                    document.getElementById('pdf-preview-container').style.display = 'none';
+                    carregarBoloesAdmin();
+                } else {
+                    document.getElementById('msg-criacao').innerHTML = `<div class="alert alert-danger">${data.error || 'Erro desconhecido'}</div>`;
+                }
+            } catch (err) {
+                document.getElementById('msg-criacao').innerHTML = '<div class="alert alert-danger">Erro de conexão</div>';
+            }
+        }
+
+        async function carregarBoloesAdmin() {
+            try {
+                const res = await fetch('/api/admin/boloes', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                const data = await res.json();
+                if (!data.success) return;
+
+                const tbody = document.getElementById('boloes-tbody');
+                tbody.innerHTML = '';
+                data.boloes.forEach(b => {
+                    const detalhesTruncado = b.detalhes && b.detalhes.length > 50 ? b.detalhes.substring(0, 50) + '...' : b.detalhes || '';
+                    const precoFormatado = b.preco.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+
+                    let mediaHTML = '';
+                    if (b.imagem_url) {
+                        mediaHTML += `<img src="${b.imagem_url}" style="max-width: 100px; max-height: 100px; border-radius: 5px;"><br>`;
+                    }
+                    if (b.video_url) {
+                        mediaHTML += `<video src="${b.video_url}" style="max-width: 100px; max-height: 100px; border-radius: 5px;" controls></video>`;
+                    }
+                    if (!mediaHTML) mediaHTML = 'Sem mídia';
+
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td>${b.id}</td>
+                        <td>${b.nome}</td>
+                        <td>${mediaHTML}</td>
+                        <td>${b.cotas_totais}</td>
+                        <td>${b.cotas_vendidas}</td>
+                        <td>
+                            <input type="number" class="form-control vendidos-input" id="vendidos-input-${b.id}" value="${b.vendidos}" min="0">
+                            <button class="btn btn-success btn-sm btn-save-vendidos" onclick="atualizarVendidos(${b.id})">Salvar</button>
+                        </td>
+                        <td>${precoFormatado}</td>
+                        <td style="max-width: 200px;" title="${b.detalhes || ''}">${detalhesTruncado}</td>
+                        <td>
+                            <button class="btn btn-warning btn-sm" onclick="abrirEditar(${b.id}, '${b.nome.replace(/'/g, "\\'")}', ${b.cotas_totais}, ${b.vendidos}, ${b.preco}, '${b.imagem_url || ''}', '${b.video_url || ''}', '${b.pdf_url || ''}', '${(b.detalhes || '').replace(/'/g, "\\'")}')">Editar</button>
+                            <button class="btn btn-danger btn-sm ms-2" onclick="removerBolao(${b.id})">Remover</button>
+                        </td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            } catch (err) {
+                console.error('Erro ao carregar concursos:', err);
+            }
+        }
+
+        function abrirEditar(id, nome, cotas, vendidos, preco, imagemUrl, videoUrl, pdfUrl, detalhes) {
+            document.getElementById('editar-id').value = id;
+            document.getElementById('editar-nome').value = nome;
+            document.getElementById('editar-cotas').value = cotas;
+            document.getElementById('editar-vendidos').value = vendidos || 100;
+            document.getElementById('editar-preco').value = preco || 1.00;
+            document.getElementById('editar-detalhes').value = detalhes || '';
+
+            // Mídia atual
+            let imagemHTML = imagemUrl ? `<img src="${imagemUrl}" class="imagem-preview">` : '<small>Sem imagem atual</small>';
+            document.getElementById('imagem-atual-container').innerHTML = imagemHTML;
+            document.getElementById('imagem-atual-container').style.display = 'block';
+
+            let videoHTML = videoUrl ? `<video src="${videoUrl}" class="video-preview" controls></video>` : '<small>Sem vídeo atual</small>';
+            document.getElementById('video-atual-container').innerHTML = videoHTML;
+            document.getElementById('video-atual-container').style.display = 'block';
+
+            let pdfHTML = pdfUrl ? `<div class="alert alert-success"><i class="bi bi-file-pdf"></i> PDF disponível: <a href="${pdfUrl}" target="_blank">Ver PDF</a></div>` : '<small>Sem PDF atual</small>';
+            document.getElementById('pdf-atual-container').innerHTML = pdfHTML;
+            document.getElementById('pdf-atual-container').style.display = 'block';
+
+            new bootstrap.Modal(document.getElementById('modalEditarBolao')).show();
+        }
+
+        async function salvarEdicao() {
+            const id = document.getElementById('editar-id').value;
+            const nome = document.getElementById('editar-nome').value.trim();
+            const cotas = parseInt(document.getElementById('editar-cotas').value);
+            const vendidos = document.getElementById('editar-vendidos').value.trim();
+            const preco = document.getElementById('editar-preco').value.trim();
+            const detalhes = document.getElementById('editar-detalhes').value.trim();
+            const imagemInput = document.getElementById('editar-imagem');
+            const videoInput = document.getElementById('editar-video');
+            const pdfInput = document.getElementById('editar-pdf');
+
+            if (!nome || cotas < 10) {
+                document.getElementById('msg-edicao').innerHTML = '<div class="alert alert-danger">Dados inválidos</div>';
+                return;
+            }
+
+            const hasCurrentMedia = document.getElementById('imagem-atual-container').innerHTML.includes('src') || 
+                                    document.getElementById('video-atual-container').innerHTML.includes('src');
+            const hasNewMedia = imagemInput.files.length > 0 || videoInput.files.length > 0;
+            if (!hasCurrentMedia && !hasNewMedia) {
+                document.getElementById('msg-edicao').innerHTML = '<div class="alert alert-danger">É necessário ter pelo menos uma imagem ou vídeo</div>';
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('id', id);
+            formData.append('nome', nome);
+            formData.append('qtd_cotas', cotas);
+            formData.append('vendidos', vendidos || '100');
+            formData.append('preco', preco || '1.00');
+            formData.append('detalhes', detalhes);
+            if (imagemInput.files.length > 0) formData.append('imagem', imagemInput.files[0]);
+            if (videoInput.files.length > 0) formData.append('video', videoInput.files[0]);
+            if (pdfInput.files.length > 0) formData.append('pdf', pdfInput.files[0]);
+
+            try {
+                const res = await fetch('/api/admin/editar-bolao', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${token}` },
+                    body: formData
+                });
+                const data = await res.json();
+
+                document.getElementById('msg-edicao').innerHTML = data.success 
+                    ? '<div class="alert alert-success">Concurso atualizado com sucesso!</div>'
+                    : `<div class="alert alert-danger">${data.error}</div>`;
+
+                if (data.success) {
+                    setTimeout(() => {
+                        carregarBoloesAdmin();
+                        bootstrap.Modal.getInstance(document.getElementById('modalEditarBolao')).hide();
+                    }, 1500);
+                }
+            } catch (err) {
+                document.getElementById('msg-edicao').innerHTML = '<div class="alert alert-danger">Erro de conexão</div>';
+            }
+        }
+
+        async function atualizarVendidos(bolaoId) {
+            const input = document.getElementById(`vendidos-input-${bolaoId}`);
+            const vendidos = input.value.trim();
+            if (!vendidos || vendidos < 0) {
+                alert('Valor inválido para vendidos');
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/admin/atualizar-vendidos', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ bolao_id: bolaoId, vendidos: parseInt(vendidos) })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    alert('Vendidos atualizados!');
+                    carregarBoloesAdmin();
+                } else {
+                    alert(data.error || 'Erro');
+                }
+            } catch (err) {
+                alert('Erro de conexão');
+            }
+        }
+
+        async function removerBolao(id) {
+            if (!confirm('Tem certeza que deseja remover este concurso? Esta ação é irreversível.')) return;
+
+            try {
+                const res = await fetch(`/api/admin/remover-bolao/${id}`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                const data = await res.json();
+                if (data.success) {
+                    alert('Concurso removido com sucesso!');
+                    carregarBoloesAdmin();
+                } else {
+                    alert(data.error || 'Erro');
+                }
+            } catch (err) {
+                alert('Erro de conexão');
+            }
+        }
+
+        async function carregarCompras() {
+            try {
+                const res = await fetch('/api/admin/compras-todos-usuarios', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                const data = await res.json();
+
+                if (!data.success) {
+                    alert('Erro ao carregar compras');
+                    return;
+                }
+
+                const tbody = document.querySelector('#compras-table tbody');
+                tbody.innerHTML = '';
+
+                data.compras.forEach(c => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td>${new Date(c.data_compra).toLocaleString('pt-BR')}</td>
+                        <td>${c.usuario_nome || 'Anônimo'}</td>
+                        <td>${c.usuario_email}</td>
+                        <td>${c.descricao || 'Concurso'}</td>
+                        <td>${c.quantidade}</td>
+                        <td>R$ ${parseFloat(c.valor).toFixed(2)}</td>
+                        <td><span class="badge ${c.status === 'approved' ? 'bg-success' : 'bg-warning'}">${c.status === 'approved' ? '✅ Aprovado' : '⏳ Pendente'}</span></td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        // Carrega ao iniciar
+        carregarBoloesAdmin();
+        carregarCompras();
+    </script>
+</body>
+</html>
