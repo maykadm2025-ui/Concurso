@@ -11,8 +11,11 @@ import logging
 from urllib.parse import urlparse
 from flask import Flask, render_template, request, jsonify, session, abort, send_from_directory
 from flask_cors import CORS
-from functools import wraps, lru_cache
+from functools import wraps
 from werkzeug.utils import secure_filename
+from supabase import create_client, Client
+import base64
+from io import BytesIO
 
 # Configuração de logging para Render
 logging.basicConfig(level=logging.INFO)
@@ -29,11 +32,81 @@ os.makedirs(imagens_dir, exist_ok=True)
 
 app = Flask(__name__, template_folder=template_dir, static_folder=static_dir)
 
-# NO RENDER: Use variável de ambiente para secret_key
+# Configurações
 app.secret_key = os.environ.get('SECRET_KEY', 'lotomaster_sistema_boloes_2024_seguro')
-app.config['UPLOAD_FOLDER'] = imagens_dir
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 CORS(app, supports_credentials=True)
+
+# ============================================
+# CONEXÃO COM SUPABASE STORAGE - CREDENCIAIS ATUALIZADAS
+# ============================================
+SUPABASE_URL = "https://dkgzrqbzotwrskdmjxbw.supabase.co"
+SUPABASE_KEY = "sb_publishable_MOm9W2-leOa6xKEs0T_ujA_thG_JJSg"  # Chave pública para acesso
+SUPABASE_SERVICE_KEY = "sb_secret_XDQSoUw2htLlYe0dsJEN5w_C5F0BJ22"  # Chave de serviço para operações administrativas
+
+# Criar cliente Supabase com a chave de serviço (para operações administrativas)
+supabase_admin: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+# Criar cliente com chave pública para operações de leitura
+supabase_public: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+BUCKET_NAME = "midia-concursos"
+
+# Inicializar bucket se não existir
+def inicializar_supabase_storage():
+    try:
+        # Verificar se o bucket existe usando a chave de serviço
+        buckets = supabase_admin.storage.list_buckets()
+        bucket_exists = any(bucket.name == BUCKET_NAME for bucket in buckets)
+        
+        if not bucket_exists:
+            # Criar bucket com permissões públicas
+            supabase_admin.storage.create_bucket(
+                BUCKET_NAME,
+                options={
+                    "public": True,
+                    "file_size_limit": 52428800,  # 50MB
+                    "allowed_mime_types": [
+                        'image/*',
+                        'video/*',
+                        'application/pdf'
+                    ]
+                }
+            )
+            logger.info(f"✅ Bucket '{BUCKET_NAME}' criado no Supabase Storage")
+            
+            # Configurar política de acesso público
+            try:
+                # Tornar o bucket completamente público para leitura
+                supabase_admin.storage.from_(BUCKET_NAME).create_signed_url(
+                    "teste.txt",
+                    3600  # 1 hora
+                )
+            except:
+                # A política já está configurada
+                pass
+        else:
+            logger.info(f"✅ Bucket '{BUCKET_NAME}' já existe no Supabase Storage")
+            
+        # Verificar se a imagem padrão existe
+        try:
+            files = supabase_admin.storage.from_(BUCKET_NAME).list("imagens")
+            default_exists = any(file['name'] == 'default.jpg' for file in files)
+            if not default_exists:
+                # Criar uma imagem padrão simples (1x1 pixel transparente)
+                default_image = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
+                supabase_admin.storage.from_(BUCKET_NAME).upload(
+                    "imagens/default.jpg",
+                    default_image,
+                    {"content-type": "image/jpeg"}
+                )
+                logger.info("✅ Imagem padrão criada no Supabase Storage")
+        except Exception as e:
+            logger.warning(f"⚠️  Não foi possível verificar/criar imagem padrão: {str(e)}")
+            
+        return True
+    except Exception as e:
+        logger.error(f"❌ Erro ao inicializar Supabase Storage: {str(e)}")
+        return False
 
 # ============================================
 # CONEXÃO COM BANCO - OTIMIZADA COM POOL
@@ -49,7 +122,7 @@ def init_db_pool():
         if database_url:
             url = urlparse(database_url)
             db_pool = pool.SimpleConnectionPool(
-                1, 10,  # min e max conexões
+                1, 10,
                 database=url.path[1:],
                 user=url.username,
                 password=url.password,
@@ -115,13 +188,103 @@ def release_db_connection(conn):
         logger.error(f"Erro ao liberar conexão: {str(e)}")
 
 # ============================================
-# MERCADO PAGO - ADAPTADO PARA RENDER
+# FUNÇÕES DE UPLOAD PARA SUPABASE
+# ============================================
+def upload_para_supabase(file, filename, folder="imagens"):
+    """Faz upload de um arquivo para o Supabase Storage usando a chave de serviço"""
+    try:
+        # Gerar nome único para o arquivo
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        file_extension = os.path.splitext(filename)[1].lower()
+        unique_filename = f"{timestamp}_{secure_filename(filename)}"
+        file_path = f"{folder}/{unique_filename}"
+        
+        # Ler o arquivo
+        file_content = file.read()
+        
+        # Validar tamanho do arquivo (50MB máximo)
+        if len(file_content) > 50 * 1024 * 1024:
+            logger.error(f"Arquivo muito grande: {len(file_content)} bytes")
+            return None
+        
+        # Fazer upload para o Supabase usando a chave de serviço
+        result = supabase_admin.storage.from_(BUCKET_NAME).upload(
+            file_path,
+            file_content,
+            {"content-type": file.content_type}
+        )
+        
+        if result:
+            # Obter URL pública (usando a chave pública para a URL)
+            file_url = f"https://dkgzrqbzotwrskdmjxbw.supabase.co/storage/v1/object/public/{BUCKET_NAME}/{file_path}"
+            
+            logger.info(f"✅ Arquivo enviado para Supabase: {file_url}")
+            return file_url
+        else:
+            logger.error("❌ Falha no upload para Supabase")
+            return None
+        
+    except Exception as e:
+        logger.error(f"❌ Erro ao fazer upload para Supabase: {str(e)}")
+        return None
+
+def deletar_do_supabase(file_url):
+    """Remove um arquivo do Supabase Storage usando a chave de serviço"""
+    try:
+        if not file_url:
+            return True
+            
+        # Extrair o caminho do arquivo da URL
+        # Formato da URL: https://dkgzrqbzotwrskdmjxbw.supabase.co/storage/v1/object/public/midia-concursos/...
+        if BUCKET_NAME in file_url and "storage/v1/object/public" in file_url:
+            # Extrair o caminho após "object/public/{BUCKET_NAME}/"
+            parts = file_url.split(f"object/public/{BUCKET_NAME}/")
+            if len(parts) > 1:
+                file_path = parts[1]
+                # Remover o arquivo usando a chave de serviço
+                supabase_admin.storage.from_(BUCKET_NAME).remove([file_path])
+                logger.info(f"✅ Arquivo removido do Supabase: {file_path}")
+                return True
+        return False
+    except Exception as e:
+        logger.error(f"❌ Erro ao remover arquivo do Supabase: {str(e)}")
+        return False
+
+def salvar_media(file, media_type="imagem"):
+    """Salva mídia no Supabase e retorna URL"""
+    if not file or file.filename == '':
+        return None
+    
+    # Validar tipo de arquivo
+    ALLOWED_IMAGE = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+    ALLOWED_VIDEO = {'mp4', 'webm', 'ogg', 'mov', 'avi', 'm4v'}
+    ALLOWED_PDF = {'pdf'}
+    
+    filename = secure_filename(file.filename)
+    file_ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
+    
+    # Determinar pasta baseada no tipo
+    if file_ext in ALLOWED_IMAGE:
+        folder = "imagens"
+    elif file_ext in ALLOWED_VIDEO:
+        folder = "videos"
+    elif file_ext in ALLOWED_PDF:
+        folder = "pdfs"
+    else:
+        logger.error(f"Tipo de arquivo não permitido: {file_ext}")
+        return None
+    
+    # Fazer upload para Supabase
+    return upload_para_supabase(file, filename, folder)
+
+# ============================================
+# MERCADO PAGO
 # ============================================
 ACCESS_TOKEN = os.environ.get('MERCADO_PAGO_ACCESS_TOKEN', 'APP_USR-6894468649991242-122722-f91f76096569c694ed26cc237ebd084c-3097500632')
 sdk = mercadopago.SDK(ACCESS_TOKEN)
 
 # ============================================
-# FUNÇÕES AUXILIARES (PERMANECEM IGUAIS)
+# FUNÇÕES AUXILIARES
 # ============================================
 def criar_token(usuario_id):
     payload = {
@@ -251,24 +414,6 @@ def token_required(f):
     return decorated
 
 # ============================================
-# UPLOAD DE MÍDIA
-# ============================================
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'webm', 'ogg', 'mov', 'pdf'}
-
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
-def salvar_media(file):
-    if file and allowed_file(file.filename):
-        filename = secure_filename(file.filename)
-        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f"{timestamp}_{filename}"
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(filepath)
-        return f"/static/imagens_boloes/{filename}"
-    return None
-
-# ============================================
 # INICIALIZAÇÃO DO BANCO
 # ============================================
 def verificar_e_corrigir_banco():
@@ -360,10 +505,11 @@ def verificar_e_corrigir_banco():
         cur.execute("SELECT COUNT(*) FROM boloes")
         if cur.fetchone()[0] == 0:
             logger.info("Criando bolões de exemplo...")
+            default_image = "https://dkgzrqbzotwrskdmjxbw.supabase.co/storage/v1/object/public/midia-concursos/imagens/default.jpg"
             cur.execute("""
                 INSERT INTO boloes (nome, cotas_totais, imagem_url, detalhes, preco) 
-                VALUES ('Concurso Exemplo Prefeitura', 100, '/static/imagens_boloes/default.jpg', 'Apostila completa para concurso de prefeitura.', 1.00)
-            """)
+                VALUES ('Concurso Exemplo Prefeitura', 100, %s, 'Apostila completa para concurso de prefeitura.', 1.00)
+            """, (default_image,))
         
         # ===== OTIMIZAÇÃO CRÍTICA: ÍNDICES =====
         logger.info("Criando índices de performance...")
@@ -388,7 +534,7 @@ def verificar_e_corrigir_banco():
         admin_hash = bcrypt.hashpw(b'admin123', bcrypt.gensalt()).decode('utf-8')
         cur.execute("""
             INSERT INTO usuarios (email, senha, nome, cpf, is_admin, data_criacao)
-            VALUES ('admin@lotomaster.com', %s, 'Administrador', '00000000000', TRUE, NOW())
+            VALUES ('admin@norteapostilas.com', %s, 'Administrador', '00000000000', TRUE, NOW())
             ON CONFLICT (email) DO UPDATE SET 
                 senha = EXCLUDED.senha,
                 is_admin = TRUE
@@ -512,24 +658,16 @@ def logout():
 # ============================================
 # ROTAS PÚBLICAS (SEM AUTENTICAÇÃO)
 # ============================================
-
-# ===== OTIMIZAÇÃO CRÍTICA: ROTA /api/boloes MAIS RÁPIDA =====
 @app.route('/api/boloes', methods=['GET'])
 def listar_boloes():
-    """ROTA PÚBLICA OTIMIZADA - Mais rápida"""
-    import time
-    start_time = time.time()
-    
-    conn = get_db_connection()
-    if not conn: 
-        logger.error("❌ Erro: Não conseguiu conectar ao banco")
-        return jsonify({'success': False, 'error': 'Erro no banco'}), 500
-    
+    """ROTA PÚBLICA OTIMIZADA - Com Supabase Storage"""
     try:
-        cur = conn.cursor()
+        conn = get_db_connection()
+        if not conn: 
+            return jsonify({'success': False, 'error': 'Erro no banco'}), 500
         
-        # ===== QUERY OTIMIZADA: Uma única query eficiente =====
-        query = """
+        cur = conn.cursor()
+        cur.execute("""
             SELECT 
                 id, nome, cotas_vendidas, cotas_totais,
                 imagem_url, video_url, pdf_url, detalhes, 
@@ -538,17 +676,11 @@ def listar_boloes():
             WHERE ativo = TRUE
             ORDER BY id DESC
             LIMIT 100
-        """
+        """)
         
-        logger.info(f"⏱️  Executando query...")
-        query_start = time.time()
-        cur.execute(query)
         rows = cur.fetchall()
-        query_time = time.time() - query_start
-        logger.info(f"✅ Query executada em {query_time:.3f}s - {len(rows)} bolões encontrados")
-        
-        # ===== PROCESSAMENTO OTIMIZADO =====
         boloes_list = []
+        
         for row in rows:
             bolao_id, nome, vendidas, total_cotas, imagem_url, video_url, pdf_url, detalhes, vendidos, preco = row
             
@@ -557,7 +689,7 @@ def listar_boloes():
                 'nome': nome,
                 'cotas_vendidas': vendidas or 0,
                 'cotas_totais': total_cotas or 100,
-                'imagem_url': imagem_url or '/static/imagens_boloes/default.jpg',
+                'imagem_url': imagem_url or 'https://dkgzrqbzotwrskdmjxbw.supabase.co/storage/v1/object/public/midia-concursos/imagens/default.jpg',
                 'video_url': video_url,
                 'pdf_url': pdf_url,
                 'detalhes': detalhes or '',
@@ -565,18 +697,12 @@ def listar_boloes():
                 'preco': float(preco) if preco else 1.00
             })
         
-        total_time = time.time() - start_time
-        logger.info(f"✅ Resposta /api/boloes completa em {total_time:.3f}s")
-        
+        release_db_connection(conn)
         return jsonify({'success': True, 'boloes': boloes_list})
     
     except Exception as e:
-        logger.error(f"❌ Erro na rota /api/boloes: {str(e)}")
-        import traceback
-        logger.error(traceback.format_exc())
+        logger.error(f"Erro na rota /api/boloes: {str(e)}")
         return jsonify({'success': False, 'error': 'Erro interno no servidor'}), 500
-    finally:
-        release_db_connection(conn)
 
 @app.route('/api/health')
 def health_check():
@@ -586,17 +712,27 @@ def health_check():
     if conn:
         release_db_connection(conn)
     
+    # Verificar Supabase
+    supabase_status = "connected"
+    try:
+        # Tentar listar buckets
+        supabase_admin.storage.list_buckets()
+    except Exception as e:
+        supabase_status = f"disconnected: {str(e)}"
+    
     return jsonify({
         "status": "online", 
         "service": "Norte Apostilas", 
-        "version": "1.1.0-optimized",
-        "database": db_status
+        "version": "1.3.0-supabase-cdn",
+        "database": db_status,
+        "supabase": supabase_status,
+        "storage": BUCKET_NAME,
+        "project_id": "dkgzrqbzotwrskdmjxbw"
     })
 
 # ============================================
 # ROTAS QUE REQUEREM AUTENTICAÇÃO
 # ============================================
-
 @app.route('/api/checkout', methods=['POST'])
 @token_required
 def checkout():
@@ -811,31 +947,30 @@ def compras_usuario():
         return jsonify({'success': False, 'error': f'Erro interno: {str(e)}'}), 500
 
 # ============================================
-# ROTAS ADMIN (mantidas iguais, só trocando conn.close() por release_db_connection())
+# ROTAS ADMIN
 # ============================================
-
 @app.route('/api/admin/criar-bolao', methods=['POST'])
 @token_required
 def admin_criar_bolao():
     if not request.current_user.get('is_admin', False):
         return jsonify({'success': False, 'error': 'Acesso negado'}), 403
 
+    # Processar uploads para Supabase
     imagem_url = None
     video_url = None
     pdf_url = None
 
     if 'imagem' in request.files and request.files['imagem'].filename != '':
         file = request.files['imagem']
-        imagem_url = salvar_media(file)
+        imagem_url = salvar_media(file, "imagem")
 
     if 'video' in request.files and request.files['video'].filename != '':
         file = request.files['video']
-        video_url = salvar_media(file)
+        video_url = salvar_media(file, "video")
 
     if 'pdf' in request.files and request.files['pdf'].filename != '':
         file = request.files['pdf']
-        if file and file.filename.lower().endswith('.pdf'):
-            pdf_url = salvar_media(file)
+        pdf_url = salvar_media(file, "pdf")
 
     if not imagem_url and not video_url:
         return jsonify({'success': False, 'error': 'Adicione pelo menos uma imagem ou vídeo'}), 400
@@ -846,13 +981,6 @@ def admin_criar_bolao():
     preco = request.form.get('preco', '1.00').strip()
 
     if not nome:
-        for url in [imagem_url, video_url, pdf_url]:
-            if url:
-                try:
-                    filename = url.split('/')[-1]
-                    os.remove(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-                except:
-                    pass
         return jsonify({'success': False, 'error': 'Nome é obrigatório'}), 400
 
     conn = get_db_connection()
@@ -864,13 +992,6 @@ def admin_criar_bolao():
         
         cur.execute("SELECT id FROM boloes WHERE nome = %s", (nome,))
         if cur.fetchone():
-            for url in [imagem_url, video_url, pdf_url]:
-                if url:
-                    try:
-                        filename = url.split('/')[-1]
-                        os.remove(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-                    except:
-                        pass
             return jsonify({'success': False, 'error': 'Já existe um concurso com este nome'}), 400
         
         cotas_totais = 100
@@ -882,16 +1003,17 @@ def admin_criar_bolao():
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """, (nome, cotas_totais, imagem_url, video_url, pdf_url, detalhes, vendidos_int, preco_float))
         conn.commit()
-        return jsonify({'success': True, 'message': 'Concurso criado com sucesso!'})
+        
+        return jsonify({
+            'success': True, 
+            'message': 'Concurso criado com sucesso!',
+            'imagem_url': imagem_url,
+            'video_url': video_url,
+            'pdf_url': pdf_url
+        })
+        
     except Exception as e:
         conn.rollback()
-        for url in [imagem_url, video_url, pdf_url]:
-            if url:
-                try:
-                    filename = url.split('/')[-1]
-                    os.remove(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-                except:
-                    pass
         logger.error(f"Erro ao criar bolão: {e}")
         return jsonify({'success': False, 'error': 'Erro ao salvar concurso'}), 500
     finally:
@@ -925,7 +1047,7 @@ def admin_listar_boloes():
                 'cotas_vendidas': row[3] or 0,
                 'vendidos': row[4] or 100,
                 'ativo': row[5],
-                'imagem_url': row[6] or '/static/imagens_boloes/default.jpg',
+                'imagem_url': row[6] or 'https://dkgzrqbzotwrskdmjxbw.supabase.co/storage/v1/object/public/midia-concursos/imagens/default.jpg',
                 'video_url': row[7],
                 'pdf_url': row[8],
                 'detalhes': row[9] or '',
@@ -982,40 +1104,31 @@ def admin_editar_bolao():
         nova_video_url = current_video
         nova_pdf_url = current_pdf
         
+        # Processar nova imagem
         if 'imagem' in request.files and request.files['imagem'].filename != '':
-            nova = salvar_media(request.files['imagem'])
+            nova = salvar_media(request.files['imagem'], "imagem")
             if nova:
                 nova_imagem_url = nova
                 if current_imagem and 'default.jpg' not in current_imagem:
-                    try:
-                        old_file = current_imagem.split('/')[-1]
-                        os.remove(os.path.join(app.config['UPLOAD_FOLDER'], old_file))
-                    except Exception as e:
-                        logger.error(f"Erro ao remover imagem antiga: {e}")
+                    deletar_do_supabase(current_imagem)
 
+        # Processar novo vídeo
         if 'video' in request.files and request.files['video'].filename != '':
-            nova = salvar_media(request.files['video'])
+            nova = salvar_media(request.files['video'], "video")
             if nova:
                 nova_video_url = nova
                 if current_video:
-                    try:
-                        old_file = current_video.split('/')[-1]
-                        os.remove(os.path.join(app.config['UPLOAD_FOLDER'], old_file))
-                    except Exception as e:
-                        logger.error(f"Erro ao remover vídeo antigo: {e}")
+                    deletar_do_supabase(current_video)
 
+        # Processar novo PDF
         if 'pdf' in request.files and request.files['pdf'].filename != '':
             file = request.files['pdf']
             if file and file.filename.lower().endswith('.pdf'):
-                nova = salvar_media(file)
+                nova = salvar_media(file, "pdf")
                 if nova:
                     nova_pdf_url = nova
                     if current_pdf:
-                        try:
-                            old_file = current_pdf.split('/')[-1]
-                            os.remove(os.path.join(app.config['UPLOAD_FOLDER'], old_file))
-                        except Exception as e:
-                            logger.error(f"Erro ao remover PDF antigo: {e}")
+                        deletar_do_supabase(current_pdf)
 
         if not nova_imagem_url and not nova_video_url:
             return jsonify({'success': False, 'error': 'É necessário ter pelo menos uma imagem ou vídeo'}), 400
@@ -1116,15 +1229,10 @@ def admin_remover_bolao(bolao_id):
         
         cur.execute("DELETE FROM boloes WHERE id = %s", (bolao_id,))
         
+        # Remover arquivos do Supabase
         for url in [imagem_url, video_url, pdf_url]:
             if url and 'default.jpg' not in url:
-                try:
-                    filename = url.split('/')[-1]
-                    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-                    if os.path.exists(filepath):
-                        os.remove(filepath)
-                except Exception as e:
-                    logger.error(f"Erro ao remover arquivo: {e}")
+                deletar_do_supabase(url)
         
         conn.commit()
         
@@ -1232,10 +1340,6 @@ def painel_admin():
         abort(403)
     return render_template('admin.html')
 
-@app.route('/static/imagens_boloes/<filename>')
-def servir_imagem(filename):
-    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
-
 @app.route('/teste-db')
 def teste_db():
     conn = get_db_connection()
@@ -1250,15 +1354,51 @@ def teste_db():
         release_db_connection(conn)
 
 # ============================================
+# ROTAS DO SUPABASE (PARA TESTE)
+# ============================================
+@app.route('/api/supabase-test', methods=['GET'])
+def supabase_test():
+    """Rota para testar conexão com Supabase Storage"""
+    try:
+        # Listar buckets
+        buckets = supabase_admin.storage.list_buckets()
+        
+        # Listar arquivos no bucket
+        files = supabase_admin.storage.from_(BUCKET_NAME).list()
+        
+        return jsonify({
+            'success': True,
+            'project_id': 'dkgzrqbzotwrskdmjxbw',
+            'buckets': [b.name for b in buckets],
+            'files_count': len(files) if files else 0,
+            'files_sample': files[:5] if files else [],
+            'bucket_name': BUCKET_NAME,
+            'status': 'Conectado ao Supabase Storage',
+            'url_example': 'https://dkgzrqbzotwrskdmjxbw.supabase.co/storage/v1/object/public/midia-concursos/imagens/default.jpg'
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'status': 'Erro ao conectar ao Supabase'
+        }), 500
+
+# ============================================
 # INICIALIZAÇÃO DO APLICATIVO
 # ============================================
-
 def inicializar_aplicacao():
-    logger.info("=== NORTE APOSTILAS - SISTEMA DE VENDAS (OTIMIZADO) ===")
+    logger.info("=== NORTE APOSTILAS - SISTEMA DE VENDAS (SUPABASE STORAGE) ===")
+    logger.info(f"Project ID: dkgzrqbzotwrskdmjxbw")
     logger.info("Inicializando pool de conexões...")
     
     if not init_db_pool():
         logger.warning("⚠️  Pool não inicializado, usando conexões diretas")
+    
+    logger.info("Inicializando Supabase Storage...")
+    if inicializar_supabase_storage():
+        logger.info("✅ Supabase Storage inicializado com sucesso!")
+    else:
+        logger.warning("⚠️  Aviso: Houve problemas ao inicializar Supabase Storage.")
     
     logger.info("Verificando estrutura do banco de dados...")
     if verificar_e_corrigir_banco():
@@ -1267,7 +1407,10 @@ def inicializar_aplicacao():
         logger.warning("⚠️  Aviso: Houve problemas ao verificar o banco de dados.")
     
     logger.info("✅ Aplicação inicializada com sucesso!")
-    logger.info("Login Admin: admin@lotomaster.com / senha: admin123")
+    logger.info("✅ Mídias serão armazenadas no Supabase Storage (CDN)")
+    logger.info(f"✅ Bucket: {BUCKET_NAME}")
+    logger.info("✅ URLs das mídias: https://dkgzrqbzotwrskdmjxbw.supabase.co/storage/v1/object/public/midia-concursos/...")
+    logger.info("Login Admin: admin@norteapostilas.com / senha: admin123")
 
 # Inicializar ao iniciar a aplicação
 inicializar_aplicacao()
