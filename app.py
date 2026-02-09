@@ -1,6 +1,7 @@
 import os
 import mercadopago
 import psycopg2
+from psycopg2 import pool
 import bcrypt
 import jwt
 import datetime
@@ -10,7 +11,7 @@ import logging
 from urllib.parse import urlparse
 from flask import Flask, render_template, request, jsonify, session, abort, send_from_directory
 from flask_cors import CORS
-from functools import wraps
+from functools import wraps, lru_cache
 from werkzeug.utils import secure_filename
 
 # Configuração de logging para Render
@@ -35,17 +36,20 @@ app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 CORS(app, supports_credentials=True)
 
 # ============================================
-# CONEXÃO COM BANCO - ADAPTADA PARA RENDER
+# CONEXÃO COM BANCO - OTIMIZADA COM POOL
 # ============================================
-def get_db_connection():
+db_pool = None
+
+def init_db_pool():
+    """Inicializa pool de conexões para melhor performance"""
+    global db_pool
     try:
-        # NO RENDER: Use DATABASE_URL da variável de ambiente
         database_url = os.environ.get('DATABASE_URL')
         
         if database_url:
-            # Para conexões do Render/Supabase
             url = urlparse(database_url)
-            conn = psycopg2.connect(
+            db_pool = pool.SimpleConnectionPool(
+                1, 10,  # min e max conexões
                 database=url.path[1:],
                 user=url.username,
                 password=url.password,
@@ -54,8 +58,8 @@ def get_db_connection():
                 sslmode='require'
             )
         else:
-            # Fallback para sua conexão local (para desenvolvimento)
-            conn = psycopg2.connect(
+            db_pool = pool.SimpleConnectionPool(
+                1, 10,
                 host="aws-1-sa-east-1.pooler.supabase.com",
                 port=5432,
                 database="postgres",
@@ -63,15 +67,56 @@ def get_db_connection():
                 password="786*&%Mauq1",
                 sslmode="require"
             )
-        return conn
+        logger.info("✅ Pool de conexões inicializado com sucesso!")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Erro ao inicializar pool: {str(e)}")
+        return False
+
+def get_db_connection():
+    """Obtém conexão do pool"""
+    try:
+        if db_pool:
+            return db_pool.getconn()
+        
+        # Fallback sem pool
+        database_url = os.environ.get('DATABASE_URL')
+        if database_url:
+            url = urlparse(database_url)
+            return psycopg2.connect(
+                database=url.path[1:],
+                user=url.username,
+                password=url.password,
+                host=url.hostname,
+                port=url.port,
+                sslmode='require'
+            )
+        else:
+            return psycopg2.connect(
+                host="aws-1-sa-east-1.pooler.supabase.com",
+                port=5432,
+                database="postgres",
+                user="postgres.dkgzrqbzotwrskdmjxbw",
+                password="786*&%Mauq1",
+                sslmode="require"
+            )
     except Exception as e:
         logger.error(f"Erro na conexão com o banco: {str(e)}")
         return None
 
+def release_db_connection(conn):
+    """Devolve conexão ao pool"""
+    try:
+        if db_pool and conn:
+            db_pool.putconn(conn)
+        elif conn:
+            conn.close()
+    except Exception as e:
+        logger.error(f"Erro ao liberar conexão: {str(e)}")
+
 # ============================================
 # MERCADO PAGO - ADAPTADO PARA RENDER
 # ============================================
-# NO RENDER: Use variável de ambiente para o token
 ACCESS_TOKEN = os.environ.get('MERCADO_PAGO_ACCESS_TOKEN', 'APP_USR-6894468649991242-122722-f91f76096569c694ed26cc237ebd084c-3097500632')
 sdk = mercadopago.SDK(ACCESS_TOKEN)
 
@@ -126,7 +171,7 @@ def get_usuario_by_email(email):
             }
         return None
     finally:
-        conn.close()
+        release_db_connection(conn)
 
 def get_usuario_by_id(usuario_id):
     conn = get_db_connection()
@@ -145,7 +190,7 @@ def get_usuario_by_id(usuario_id):
             }
         return None
     finally:
-        conn.close()
+        release_db_connection(conn)
 
 def atualizar_ultimo_login(usuario_id):
     conn = get_db_connection()
@@ -156,7 +201,7 @@ def atualizar_ultimo_login(usuario_id):
         conn.commit()
         return True
     finally:
-        conn.close()
+        release_db_connection(conn)
 
 def atualizar_cpf_usuario(usuario_id, cpf):
     conn = get_db_connection()
@@ -167,7 +212,7 @@ def atualizar_cpf_usuario(usuario_id, cpf):
         conn.commit()
         return True
     finally:
-        conn.close()
+        release_db_connection(conn)
 
 # ============================================
 # MIDDLEWARE DE AUTENTICAÇÃO
@@ -320,10 +365,24 @@ def verificar_e_corrigir_banco():
                 VALUES ('Concurso Exemplo Prefeitura', 100, '/static/imagens_boloes/default.jpg', 'Apostila completa para concurso de prefeitura.', 1.00)
             """)
         
-        # Índices
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_usuarios_email ON usuarios(email);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_compras_usuario_id ON compras(usuario_id);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_compras_order_id ON compras(order_id);")
+        # ===== OTIMIZAÇÃO CRÍTICA: ÍNDICES =====
+        logger.info("Criando índices de performance...")
+        indices = [
+            ("idx_usuarios_email", "usuarios", "email"),
+            ("idx_compras_usuario_id", "compras", "usuario_id"),
+            ("idx_compras_order_id", "compras", "order_id"),
+            ("idx_boloes_ativo", "boloes", "ativo"),
+            ("idx_boloes_id_desc", "boloes", "id DESC")
+        ]
+        
+        for idx_name, table, columns in indices:
+            cur.execute(f"""
+                SELECT 1 FROM pg_indexes 
+                WHERE indexname = '{idx_name}'
+            """)
+            if not cur.fetchone():
+                logger.info(f"Criando índice {idx_name}...")
+                cur.execute(f"CREATE INDEX {idx_name} ON {table}({columns})")
         
         # Usuário admin
         admin_hash = bcrypt.hashpw(b'admin123', bcrypt.gensalt()).decode('utf-8')
@@ -337,7 +396,7 @@ def verificar_e_corrigir_banco():
         
         conn.commit()
         cur.close()
-        logger.info("Banco verificado e admin garantido!")
+        logger.info("✅ Banco verificado e otimizado!")
         return True
         
     except Exception as e:
@@ -345,7 +404,7 @@ def verificar_e_corrigir_banco():
         logger.error(f"Erro ao verificar banco: {str(e)}")
         return False
     finally:
-        conn.close()
+        release_db_connection(conn)
 
 # ============================================
 # ROTAS DE AUTENTICAÇÃO
@@ -392,7 +451,7 @@ def registrar():
                 }
             })
         finally:
-            conn.close()
+            release_db_connection(conn)
     except Exception as e:
         logger.error(f"Erro no registro: {str(e)}")
         return jsonify({'success': False, 'error': 'Erro interno'}), 500
@@ -453,57 +512,86 @@ def logout():
 # ============================================
 # ROTAS PÚBLICAS (SEM AUTENTICAÇÃO)
 # ============================================
+
+# ===== OTIMIZAÇÃO CRÍTICA: ROTA /api/boloes MAIS RÁPIDA =====
 @app.route('/api/boloes', methods=['GET'])
 def listar_boloes():
-    """ROTA PÚBLICA - Não requer autenticação"""
+    """ROTA PÚBLICA OTIMIZADA - Mais rápida"""
+    import time
+    start_time = time.time()
+    
     conn = get_db_connection()
     if not conn: 
+        logger.error("❌ Erro: Não conseguiu conectar ao banco")
         return jsonify({'success': False, 'error': 'Erro no banco'}), 500
     
     try:
         cur = conn.cursor()
-        cur.execute("""
-            SELECT id, nome, cotas_vendidas, cotas_totais,
-                   imagem_url, video_url, pdf_url, detalhes, vendidos, preco
+        
+        # ===== QUERY OTIMIZADA: Uma única query eficiente =====
+        query = """
+            SELECT 
+                id, nome, cotas_vendidas, cotas_totais,
+                imagem_url, video_url, pdf_url, detalhes, 
+                vendidos, preco
             FROM boloes 
             WHERE ativo = TRUE
             ORDER BY id DESC
-        """)
-        rows = cur.fetchall()
+            LIMIT 100
+        """
         
+        logger.info(f"⏱️  Executando query...")
+        query_start = time.time()
+        cur.execute(query)
+        rows = cur.fetchall()
+        query_time = time.time() - query_start
+        logger.info(f"✅ Query executada em {query_time:.3f}s - {len(rows)} bolões encontrados")
+        
+        # ===== PROCESSAMENTO OTIMIZADO =====
         boloes_list = []
         for row in rows:
             bolao_id, nome, vendidas, total_cotas, imagem_url, video_url, pdf_url, detalhes, vendidos, preco = row
-            vendidas = vendidas or 0
-            total_cotas = total_cotas or 100
-            vendidos = vendidos or 100
-            preco = float(preco) if preco else 1.00
             
             boloes_list.append({
                 'id': bolao_id,
                 'nome': nome,
-                'cotas_vendidas': vendidas,
-                'cotas_totais': total_cotas,
+                'cotas_vendidas': vendidas or 0,
+                'cotas_totais': total_cotas or 100,
                 'imagem_url': imagem_url or '/static/imagens_boloes/default.jpg',
                 'video_url': video_url,
                 'pdf_url': pdf_url,
                 'detalhes': detalhes or '',
-                'vendidos': vendidos,
-                'preco': preco
+                'vendidos': vendidos or 100,
+                'preco': float(preco) if preco else 1.00
             })
+        
+        total_time = time.time() - start_time
+        logger.info(f"✅ Resposta /api/boloes completa em {total_time:.3f}s")
         
         return jsonify({'success': True, 'boloes': boloes_list})
     
     except Exception as e:
-        logger.error(f"Erro na rota /api/boloes: {str(e)}")
+        logger.error(f"❌ Erro na rota /api/boloes: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({'success': False, 'error': 'Erro interno no servidor'}), 500
     finally:
-        conn.close()
+        release_db_connection(conn)
 
 @app.route('/api/health')
 def health_check():
     """ROTA PÚBLICA - Health check"""
-    return jsonify({"status": "online", "service": "Norte Apostilas", "version": "1.0.0"})
+    conn = get_db_connection()
+    db_status = "connected" if conn else "disconnected"
+    if conn:
+        release_db_connection(conn)
+    
+    return jsonify({
+        "status": "online", 
+        "service": "Norte Apostilas", 
+        "version": "1.1.0-optimized",
+        "database": db_status
+    })
 
 # ============================================
 # ROTAS QUE REQUEREM AUTENTICAÇÃO
@@ -532,7 +620,7 @@ def checkout():
                 if result and result[0]:
                     preco_bolao = float(result[0])
             finally:
-                conn_preco.close()
+                release_db_connection(conn_preco)
         
         total = preco_bolao * quantidade
         
@@ -546,7 +634,7 @@ def checkout():
                 if result:
                     nome_bolao = result[0]
             finally:
-                conn_nome.close()
+                release_db_connection(conn_nome)
         
         descricao = f"{nome_bolao} - {quantidade} unidade{'s' if quantidade > 1 else ''}"
         cpf_usuario = re.sub(r'\D', '', request.current_user['cpf'])
@@ -586,7 +674,7 @@ def checkout():
             ))
             conn.commit()
         finally:
-            conn.close()
+            release_db_connection(conn)
 
         return jsonify({
             "success": True,
@@ -665,7 +753,7 @@ def check_status(order_id):
             return jsonify({"success": True, "status": status})
             
         finally:
-            conn.close()
+            release_db_connection(conn)
     except Exception as e:
         logger.error(f"Erro ao verificar status: {str(e)}")
         return jsonify({"success": False, "error": "Erro ao verificar"}), 500
@@ -716,14 +804,14 @@ def compras_usuario():
             return jsonify({'success': True, 'compras': compras})
         
         finally:
-            conn.close()
+            release_db_connection(conn)
     
     except Exception as e:
         logger.error(f"Erro ao carregar compras: {str(e)}")
         return jsonify({'success': False, 'error': f'Erro interno: {str(e)}'}), 500
 
 # ============================================
-# ROTAS ADMIN
+# ROTAS ADMIN (mantidas iguais, só trocando conn.close() por release_db_connection())
 # ============================================
 
 @app.route('/api/admin/criar-bolao', methods=['POST'])
@@ -807,7 +895,7 @@ def admin_criar_bolao():
         logger.error(f"Erro ao criar bolão: {e}")
         return jsonify({'success': False, 'error': 'Erro ao salvar concurso'}), 500
     finally:
-        conn.close()
+        release_db_connection(conn)
 
 @app.route('/api/admin/boloes', methods=['GET'])
 @token_required
@@ -849,7 +937,7 @@ def admin_listar_boloes():
         logger.error(f"Erro ao listar bolões admin: {e}")
         return jsonify({'success': False, 'error': 'Erro interno'}), 500
     finally:
-        conn.close()
+        release_db_connection(conn)
 
 @app.route('/api/admin/editar-bolao', methods=['POST'])
 @token_required
@@ -955,7 +1043,7 @@ def admin_editar_bolao():
         logger.error(f"Erro ao editar bolão: {e}")
         return jsonify({'success': False, 'error': 'Erro ao atualizar concurso'}), 500
     finally:
-        conn.close()
+        release_db_connection(conn)
 
 @app.route('/api/admin/atualizar-vendidos', methods=['POST'])
 @token_required
@@ -1001,7 +1089,7 @@ def admin_atualizar_vendidos():
         logger.error(f"Erro ao atualizar vendidos: {e}")
         return jsonify({'success': False, 'error': 'Erro ao atualizar vendidos'}), 500
     finally:
-        conn.close()
+        release_db_connection(conn)
 
 @app.route('/api/admin/remover-bolao/<int:bolao_id>', methods=['DELETE'])
 @token_required
@@ -1047,7 +1135,7 @@ def admin_remover_bolao(bolao_id):
         logger.error(f"Erro ao remover bolão: {e}")
         return jsonify({'success': False, 'error': 'Erro ao remover concurso'}), 500
     finally:
-        conn.close()
+        release_db_connection(conn)
 
 @app.route('/api/admin/compras-todos-usuarios', methods=['GET'])
 @token_required
@@ -1074,7 +1162,7 @@ def admin_compras_todos():
             })
         return jsonify({'success': True, 'compras': compras})
     finally:
-        conn.close()
+        release_db_connection(conn)
 
 @app.route('/api/admin/corrigir-cotas', methods=['POST'])
 @token_required
@@ -1127,7 +1215,7 @@ def corrigir_cotas():
         logger.error(f"Erro ao corrigir cotas: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
-        conn.close()
+        release_db_connection(conn)
 
 # ============================================
 # ROTAS FRONTEND
@@ -1153,25 +1241,32 @@ def teste_db():
     conn = get_db_connection()
     if not conn:
         return "Erro de conexão", 500
-    cur = conn.cursor()
-    cur.execute("SELECT version()")
-    version = cur.fetchone()[0]
-    conn.close()
-    return f"Conectado! Versão: {version}"
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT version()")
+        version = cur.fetchone()[0]
+        return f"Conectado! Versão: {version}"
+    finally:
+        release_db_connection(conn)
 
 # ============================================
 # INICIALIZAÇÃO DO APLICATIVO
 # ============================================
 
 def inicializar_aplicacao():
-    logger.info("=== NORTE APOSTILAS - SISTEMA DE VENDAS ===")
+    logger.info("=== NORTE APOSTILAS - SISTEMA DE VENDAS (OTIMIZADO) ===")
+    logger.info("Inicializando pool de conexões...")
+    
+    if not init_db_pool():
+        logger.warning("⚠️  Pool não inicializado, usando conexões diretas")
+    
     logger.info("Verificando estrutura do banco de dados...")
     if verificar_e_corrigir_banco():
-        logger.info("Banco de dados verificado e corrigido com sucesso!")
+        logger.info("✅ Banco de dados verificado e otimizado!")
     else:
-        logger.warning("Aviso: Houve problemas ao verificar o banco de dados.")
+        logger.warning("⚠️  Aviso: Houve problemas ao verificar o banco de dados.")
     
-    logger.info("Aplicação inicializada com sucesso!")
+    logger.info("✅ Aplicação inicializada com sucesso!")
     logger.info("Login Admin: admin@lotomaster.com / senha: admin123")
 
 # Inicializar ao iniciar a aplicação
@@ -1181,7 +1276,5 @@ inicializar_aplicacao()
 # PONTO DE ENTRADA PARA RENDER
 # ============================================
 if __name__ == '__main__':
-    # NO RENDER: Use a porta da variável de ambiente
     port = int(os.environ.get('PORT', 5000))
-    # NO RENDER: debug deve ser False
     app.run(debug=False, host='0.0.0.0', port=port)
