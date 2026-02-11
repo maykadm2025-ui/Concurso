@@ -8,9 +8,6 @@ import datetime
 import re
 import json
 import logging
-import subprocess
-import tempfile
-import shutil
 from urllib.parse import urlparse
 from flask import Flask, render_template, request, jsonify, session, abort, send_from_directory
 from flask_cors import CORS
@@ -37,49 +34,65 @@ app = Flask(__name__, template_folder=template_dir, static_folder=static_dir)
 
 # Configurações
 app.secret_key = os.environ.get('SECRET_KEY', 'lotomaster_sistema_boloes_2024_seguro')
-app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # Aumentado para 500MB (HLS + original temporário)
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 CORS(app, supports_credentials=True)
 
 # ============================================
 # CONEXÃO COM SUPABASE STORAGE - CREDENCIAIS ATUALIZADAS
 # ============================================
 SUPABASE_URL = "https://dkgzrqbzotwrskdmjxbw.supabase.co"
-SUPABASE_KEY = "sb_publishable_MOm9W2-leOa6xKEs0T_ujA_thG_JJSg"
-SUPABASE_SERVICE_KEY = "sb_secret_XDQSoUw2htLlYe0dsJEN5w_C5F0BJ22"
+SUPABASE_KEY = "sb_publishable_MOm9W2-leOa6xKEs0T_ujA_thG_JJSg"  # Chave pública para acesso
+SUPABASE_SERVICE_KEY = "sb_secret_XDQSoUw2htLlYe0dsJEN5w_C5F0BJ22"  # Chave de serviço para operações administrativas
 
+# Criar cliente Supabase com a chave de serviço (para operações administrativas)
 supabase_admin: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+# Criar cliente com chave pública para operações de leitura
 supabase_public: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 BUCKET_NAME = "midia-concursos"
 
+# Inicializar bucket se não existir
 def inicializar_supabase_storage():
-    """Idêntico ao seu código original"""
     try:
+        # Verificar se o bucket existe usando a chave de serviço
         buckets = supabase_admin.storage.list_buckets()
         bucket_exists = any(bucket.name == BUCKET_NAME for bucket in buckets)
+        
         if not bucket_exists:
+            # Criar bucket com permissões públicas
             supabase_admin.storage.create_bucket(
                 BUCKET_NAME,
                 options={
                     "public": True,
-                    "file_size_limit": 524288000,  # 500MB
+                    "file_size_limit": 52428800,  # 50MB
                     "allowed_mime_types": [
                         'image/*',
                         'video/*',
-                        'application/pdf',
-                        'application/x-mpegURL',   # HLS playlist
-                        'video/MP2T'              # HLS segment
+                        'application/pdf'
                     ]
                 }
             )
             logger.info(f"✅ Bucket '{BUCKET_NAME}' criado no Supabase Storage")
+            
+            # Configurar política de acesso público
+            try:
+                # Tornar o bucket completamente público para leitura
+                supabase_admin.storage.from_(BUCKET_NAME).create_signed_url(
+                    "teste.txt",
+                    3600  # 1 hora
+                )
+            except:
+                # A política já está configurada
+                pass
         else:
             logger.info(f"✅ Bucket '{BUCKET_NAME}' já existe no Supabase Storage")
-        # Criar imagem padrão se não existir
+            
+        # Verificar se a imagem padrão existe
         try:
             files = supabase_admin.storage.from_(BUCKET_NAME).list("imagens")
             default_exists = any(file['name'] == 'default.jpg' for file in files)
             if not default_exists:
+                # Criar uma imagem padrão simples (1x1 pixel transparente)
                 default_image = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
                 supabase_admin.storage.from_(BUCKET_NAME).upload(
                     "imagens/default.jpg",
@@ -88,238 +101,24 @@ def inicializar_supabase_storage():
                 )
                 logger.info("✅ Imagem padrão criada no Supabase Storage")
         except Exception as e:
-            logger.warning(f"⚠️ Não foi possível verificar/criar imagem padrão: {str(e)}")
+            logger.warning(f"⚠️  Não foi possível verificar/criar imagem padrão: {str(e)}")
+            
         return True
     except Exception as e:
         logger.error(f"❌ Erro ao inicializar Supabase Storage: {str(e)}")
         return False
 
 # ============================================
-# CONVERSÃO HLS (FFmpeg) - NOVO
-# ============================================
-def verificar_ffmpeg():
-    """Verifica se o FFmpeg está instalado no sistema."""
-    return shutil.which("ffmpeg") is not None
-
-def converter_para_hls(caminho_video, nome_base):
-    """
-    Converte um vídeo para HLS usando FFmpeg.
-    Retorna o caminho da pasta temporária com os arquivos gerados (.m3u8 + .ts)
-    ou None em caso de erro.
-    """
-    if not verificar_ffmpeg():
-        logger.error("FFmpeg não encontrado no servidor. Instale via aptfile.")
-        return None
-
-    pasta_hls = tempfile.mkdtemp()
-    playlist = os.path.join(pasta_hls, f"{nome_base}.m3u8")
-    segment_pattern = os.path.join(pasta_hls, f"{nome_base}_%03d.ts")
-
-    comando = [
-        "ffmpeg", "-i", caminho_video,
-        "-profile:v", "baseline",
-        "-level", "3.0",
-        "-start_number", "0",
-        "-hls_time", "10",
-        "-hls_list_size", "0",
-        "-f", "hls",
-        "-hls_segment_filename", segment_pattern,
-        playlist
-    ]
-
-    try:
-        subprocess.run(comando, check=True, capture_output=True, text=True, timeout=600)
-        logger.info(f"HLS gerado com sucesso: {playlist}")
-        return pasta_hls
-    except subprocess.TimeoutExpired:
-        logger.error("Tempo limite excedido na conversão HLS")
-        shutil.rmtree(pasta_hls, ignore_errors=True)
-        return None
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Erro FFmpeg: {e.stderr}")
-        shutil.rmtree(pasta_hls, ignore_errors=True)
-        return None
-
-def upload_pasta_hls(pasta_hls, prefixo_destino):
-    """
-    Envia todos os arquivos da pasta HLS para o Supabase.
-    Retorna a URL pública da playlist .m3u8.
-    """
-    try:
-        arquivos = os.listdir(pasta_hls)
-        if not arquivos:
-            return None
-
-        playlist_url = None
-        for arquivo in arquivos:
-            caminho_local = os.path.join(pasta_hls, arquivo)
-            with open(caminho_local, 'rb') as f:
-                conteudo = f.read()
-
-            caminho_remoto = f"{prefixo_destino}/{arquivo}"
-            mime = "video/MP2T" if arquivo.endswith('.ts') else "application/x-mpegURL"
-
-            supabase_admin.storage.from_(BUCKET_NAME).upload(
-                caminho_remoto,
-                conteudo,
-                {"content-type": mime}
-            )
-
-            if arquivo.endswith('.m3u8'):
-                playlist_url = f"https://{SUPABASE_URL.split('//')[1]}/storage/v1/object/public/{BUCKET_NAME}/{caminho_remoto}"
-
-        logger.info(f"✅ HLS enviado para Supabase: {playlist_url}")
-        return playlist_url
-    except Exception as e:
-        logger.error(f"❌ Erro no upload HLS: {str(e)}")
-        return None
-    finally:
-        shutil.rmtree(pasta_hls, ignore_errors=True)
-
-# ============================================
-# FUNÇÕES DE UPLOAD PARA SUPABASE (MODIFICADAS)
-# ============================================
-def upload_para_supabase(file, filename, folder="imagens"):
-    """
-    Função original preservada. Não utilizada para vídeos.
-    Mantida para compatibilidade.
-    """
-    try:
-        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-        file_extension = os.path.splitext(filename)[1].lower()
-        unique_filename = f"{timestamp}_{secure_filename(filename)}"
-        file_path = f"{folder}/{unique_filename}"
-        file_content = file.read()
-        if len(file_content) > 50 * 1024 * 1024:
-            logger.error(f"Arquivo muito grande: {len(file_content)} bytes")
-            return None
-        result = supabase_admin.storage.from_(BUCKET_NAME).upload(
-            file_path,
-            file_content,
-            {"content-type": file.content_type}
-        )
-        if result:
-            file_url = f"https://dkgzrqbzotwrskdmjxbw.supabase.co/storage/v1/object/public/{BUCKET_NAME}/{file_path}"
-            logger.info(f"✅ Arquivo enviado para Supabase: {file_url}")
-            return file_url
-        else:
-            logger.error("❌ Falha no upload para Supabase")
-            return None
-    except Exception as e:
-        logger.error(f"❌ Erro ao fazer upload para Supabase: {str(e)}")
-        return None
-
-def salvar_media(file, media_type="imagem"):
-    """
-    Função MODIFICADA para converter vídeos para HLS.
-    Para imagens/PDF: mantém o upload direto.
-    Para vídeos: converte para HLS e retorna URL da playlist .m3u8.
-    """
-    if not file or file.filename == '':
-        return None
-
-    ALLOWED_IMAGE = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
-    ALLOWED_VIDEO = {'mp4', 'webm', 'ogg', 'mov', 'avi', 'm4v'}
-    ALLOWED_PDF = {'pdf'}
-
-    filename = secure_filename(file.filename)
-    file_ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
-    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    nome_unico = f"{timestamp}_{filename}"
-
-    # --- Imagens e PDFs (direto) ---
-    if file_ext in ALLOWED_IMAGE:
-        folder = "imagens"
-        file_path = f"{folder}/{nome_unico}"
-        file_content = file.read()
-        supabase_admin.storage.from_(BUCKET_NAME).upload(
-            file_path,
-            file_content,
-            {"content-type": file.content_type}
-        )
-        return f"https://{SUPABASE_URL.split('//')[1]}/storage/v1/object/public/{BUCKET_NAME}/{file_path}"
-
-    elif file_ext in ALLOWED_PDF:
-        folder = "pdfs"
-        file_path = f"{folder}/{nome_unico}"
-        file_content = file.read()
-        supabase_admin.storage.from_(BUCKET_NAME).upload(
-            file_path,
-            file_content,
-            {"content-type": file.content_type}
-        )
-        return f"https://{SUPABASE_URL.split('//')[1]}/storage/v1/object/public/{BUCKET_NAME}/{file_path}"
-
-    # --- Vídeos: CONVERSÃO HLS ---
-    elif file_ext in ALLOWED_VIDEO:
-        # Salva o vídeo original temporariamente
-        with tempfile.NamedTemporaryFile(suffix=f".{file_ext}", delete=False) as tmp:
-            file.save(tmp.name)
-            caminho_original = tmp.name
-
-        # Nome base sem extensão
-        nome_base = nome_unico.rsplit('.', 1)[0]
-
-        # Converte para HLS
-        pasta_hls = converter_para_hls(caminho_original, nome_base)
-
-        # Remove o vídeo original
-        os.unlink(caminho_original)
-
-        if not pasta_hls:
-            logger.error("Falha na conversão HLS. Vídeo não será armazenado.")
-            return None
-
-        # Upload dos arquivos HLS
-        prefixo_destino = f"videos/hls/{nome_base}"
-        playlist_url = upload_pasta_hls(pasta_hls, prefixo_destino)
-        return playlist_url
-
-    else:
-        logger.error(f"Tipo de arquivo não permitido: {file_ext}")
-        return None
-
-def deletar_do_supabase(file_url):
-    """
-    Função MODIFICADA para remover também pastas HLS completas.
-    """
-    try:
-        if not file_url:
-            return True
-
-        if BUCKET_NAME in file_url and "storage/v1/object/public" in file_url:
-            parts = file_url.split(f"object/public/{BUCKET_NAME}/")
-            if len(parts) > 1:
-                file_path = parts[1]
-
-                # Se for uma playlist HLS, remove a pasta inteira
-                if file_path.endswith('.m3u8'):
-                    pasta = file_path.rsplit('/', 1)[0]
-                    try:
-                        arquivos = supabase_admin.storage.from_(BUCKET_NAME).list(pasta)
-                        for arq in arquivos:
-                            supabase_admin.storage.from_(BUCKET_NAME).remove([f"{pasta}/{arq['name']}"])
-                        logger.info(f"✅ Pasta HLS removida: {pasta}")
-                    except Exception as e:
-                        logger.warning(f"Erro ao listar/remover pasta HLS: {e}")
-                else:
-                    supabase_admin.storage.from_(BUCKET_NAME).remove([file_path])
-                    logger.info(f"✅ Arquivo removido: {file_path}")
-                return True
-        return False
-    except Exception as e:
-        logger.error(f"❌ Erro ao remover arquivo do Supabase: {str(e)}")
-        return False
-
-# ============================================
-# CONEXÃO COM BANCO - OTIMIZADA COM POOL (100% igual)
+# CONEXÃO COM BANCO - OTIMIZADA COM POOL
 # ============================================
 db_pool = None
 
 def init_db_pool():
+    """Inicializa pool de conexões para melhor performance"""
     global db_pool
     try:
         database_url = os.environ.get('DATABASE_URL')
+        
         if database_url:
             url = urlparse(database_url)
             db_pool = pool.SimpleConnectionPool(
@@ -348,9 +147,12 @@ def init_db_pool():
         return False
 
 def get_db_connection():
+    """Obtém conexão do pool"""
     try:
         if db_pool:
             return db_pool.getconn()
+        
+        # Fallback sem pool
         database_url = os.environ.get('DATABASE_URL')
         if database_url:
             url = urlparse(database_url)
@@ -376,6 +178,7 @@ def get_db_connection():
         return None
 
 def release_db_connection(conn):
+    """Devolve conexão ao pool"""
     try:
         if db_pool and conn:
             db_pool.putconn(conn)
@@ -385,7 +188,103 @@ def release_db_connection(conn):
         logger.error(f"Erro ao liberar conexão: {str(e)}")
 
 # ============================================
-# FUNÇÕES AUXILIARES (100% iguais)
+# FUNÇÕES DE UPLOAD PARA SUPABASE
+# ============================================
+def upload_para_supabase(file, filename, folder="imagens"):
+    """Faz upload de um arquivo para o Supabase Storage usando a chave de serviço"""
+    try:
+        # Gerar nome único para o arquivo
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        file_extension = os.path.splitext(filename)[1].lower()
+        unique_filename = f"{timestamp}_{secure_filename(filename)}"
+        file_path = f"{folder}/{unique_filename}"
+        
+        # Ler o arquivo
+        file_content = file.read()
+        
+        # Validar tamanho do arquivo (50MB máximo)
+        if len(file_content) > 50 * 1024 * 1024:
+            logger.error(f"Arquivo muito grande: {len(file_content)} bytes")
+            return None
+        
+        # Fazer upload para o Supabase usando a chave de serviço
+        result = supabase_admin.storage.from_(BUCKET_NAME).upload(
+            file_path,
+            file_content,
+            {"content-type": file.content_type}
+        )
+        
+        if result:
+            # Obter URL pública (usando a chave pública para a URL)
+            file_url = f"https://dkgzrqbzotwrskdmjxbw.supabase.co/storage/v1/object/public/{BUCKET_NAME}/{file_path}"
+            
+            logger.info(f"✅ Arquivo enviado para Supabase: {file_url}")
+            return file_url
+        else:
+            logger.error("❌ Falha no upload para Supabase")
+            return None
+        
+    except Exception as e:
+        logger.error(f"❌ Erro ao fazer upload para Supabase: {str(e)}")
+        return None
+
+def deletar_do_supabase(file_url):
+    """Remove um arquivo do Supabase Storage usando a chave de serviço"""
+    try:
+        if not file_url:
+            return True
+            
+        # Extrair o caminho do arquivo da URL
+        # Formato da URL: https://dkgzrqbzotwrskdmjxbw.supabase.co/storage/v1/object/public/midia-concursos/...
+        if BUCKET_NAME in file_url and "storage/v1/object/public" in file_url:
+            # Extrair o caminho após "object/public/{BUCKET_NAME}/"
+            parts = file_url.split(f"object/public/{BUCKET_NAME}/")
+            if len(parts) > 1:
+                file_path = parts[1]
+                # Remover o arquivo usando a chave de serviço
+                supabase_admin.storage.from_(BUCKET_NAME).remove([file_path])
+                logger.info(f"✅ Arquivo removido do Supabase: {file_path}")
+                return True
+        return False
+    except Exception as e:
+        logger.error(f"❌ Erro ao remover arquivo do Supabase: {str(e)}")
+        return False
+
+def salvar_media(file, media_type="imagem"):
+    """Salva mídia no Supabase e retorna URL"""
+    if not file or file.filename == '':
+        return None
+    
+    # Validar tipo de arquivo
+    ALLOWED_IMAGE = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+    ALLOWED_VIDEO = {'mp4', 'webm', 'ogg', 'mov', 'avi', 'm4v'}
+    ALLOWED_PDF = {'pdf'}
+    
+    filename = secure_filename(file.filename)
+    file_ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
+    
+    # Determinar pasta baseada no tipo
+    if file_ext in ALLOWED_IMAGE:
+        folder = "imagens"
+    elif file_ext in ALLOWED_VIDEO:
+        folder = "videos"
+    elif file_ext in ALLOWED_PDF:
+        folder = "pdfs"
+    else:
+        logger.error(f"Tipo de arquivo não permitido: {file_ext}")
+        return None
+    
+    # Fazer upload para Supabase
+    return upload_para_supabase(file, filename, folder)
+
+# ============================================
+# MERCADO PAGO
+# ============================================
+ACCESS_TOKEN = os.environ.get('MERCADO_PAGO_ACCESS_TOKEN', 'APP_USR-6894468649991242-122722-f91f76096569c694ed26cc237ebd084c-3097500632')
+sdk = mercadopago.SDK(ACCESS_TOKEN)
+
+# ============================================
+# FUNÇÕES AUXILIARES
 # ============================================
 def criar_token(usuario_id):
     payload = {
@@ -479,12 +378,13 @@ def atualizar_cpf_usuario(usuario_id, cpf):
         release_db_connection(conn)
 
 # ============================================
-# MIDDLEWARE DE AUTENTICAÇÃO (100% igual)
+# MIDDLEWARE DE AUTENTICAÇÃO
 # ============================================
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         token = None
+        
         try:
             if 'Authorization' in request.headers and request.headers['Authorization'].startswith('Bearer '):
                 token = request.headers['Authorization'].split(" ")[1]
@@ -492,32 +392,41 @@ def token_required(f):
                 token = session['token']
             elif 'token' in request.args:
                 token = request.args.get('token')
+            
             if not token:
                 return jsonify({'success': False, 'error': 'Token não fornecido'}), 401
+            
             usuario_id = verificar_token(token)
             if not usuario_id:
                 return jsonify({'success': False, 'error': 'Token inválido ou expirado'}), 401
+            
             current_user = get_usuario_by_id(usuario_id)
             if not current_user:
                 return jsonify({'success': False, 'error': 'Usuário não encontrado'}), 401
+            
             request.current_user = current_user
             return f(*args, **kwargs)
+            
         except Exception as e:
             logger.error(f"Erro no token_required: {str(e)}")
             return jsonify({'success': False, 'error': 'Erro de autenticação'}), 500
+    
     return decorated
 
 # ============================================
-# INICIALIZAÇÃO DO BANCO (100% igual)
+# INICIALIZAÇÃO DO BANCO
 # ============================================
 def verificar_e_corrigir_banco():
     logger.info("Verificando estrutura do banco de dados...")
+    
     conn = get_db_connection()
     if not conn:
         logger.error("Não foi possível conectar ao banco")
         return False
+    
     try:
         cur = conn.cursor()
+        
         # Tabela de usuários
         cur.execute("""
             CREATE TABLE IF NOT EXISTS usuarios (
@@ -533,6 +442,7 @@ def verificar_e_corrigir_banco():
                 is_admin BOOLEAN DEFAULT FALSE
             );
         """)
+        
         # Tabela de compras
         cur.execute("""
             CREATE TABLE IF NOT EXISTS compras (
@@ -555,6 +465,7 @@ def verificar_e_corrigir_banco():
                 REFERENCES usuarios(id) ON DELETE CASCADE
             );
         """)
+
         # Tabela de bolões
         cur.execute("""
             CREATE TABLE IF NOT EXISTS boloes (
@@ -571,6 +482,7 @@ def verificar_e_corrigir_banco():
                 preco DECIMAL(10,2) DEFAULT 1.00
             );
         """)
+        
         # Adicionar colunas se não existirem
         colunas = [
             ('detalhes', 'TEXT'),
@@ -588,6 +500,7 @@ def verificar_e_corrigir_banco():
             if not cur.fetchone():
                 logger.info(f"Adicionando coluna '{coluna}' à tabela 'boloes'...")
                 cur.execute(f"ALTER TABLE boloes ADD COLUMN {coluna} {tipo}")
+        
         # Inserir bolões de exemplo se tabela vazia
         cur.execute("SELECT COUNT(*) FROM boloes")
         if cur.fetchone()[0] == 0:
@@ -597,7 +510,9 @@ def verificar_e_corrigir_banco():
                 INSERT INTO boloes (nome, cotas_totais, imagem_url, detalhes, preco) 
                 VALUES ('Concurso Exemplo Prefeitura', 100, %s, 'Apostila completa para concurso de prefeitura.', 1.00)
             """, (default_image,))
-        # Índices
+        
+        # ===== OTIMIZAÇÃO CRÍTICA: ÍNDICES =====
+        logger.info("Criando índices de performance...")
         indices = [
             ("idx_usuarios_email", "usuarios", "email"),
             ("idx_compras_usuario_id", "compras", "usuario_id"),
@@ -605,6 +520,7 @@ def verificar_e_corrigir_banco():
             ("idx_boloes_ativo", "boloes", "ativo"),
             ("idx_boloes_id_desc", "boloes", "id DESC")
         ]
+        
         for idx_name, table, columns in indices:
             cur.execute(f"""
                 SELECT 1 FROM pg_indexes 
@@ -613,6 +529,7 @@ def verificar_e_corrigir_banco():
             if not cur.fetchone():
                 logger.info(f"Criando índice {idx_name}...")
                 cur.execute(f"CREATE INDEX {idx_name} ON {table}({columns})")
+        
         # Usuário admin
         admin_hash = bcrypt.hashpw(b'admin123', bcrypt.gensalt()).decode('utf-8')
         cur.execute("""
@@ -622,10 +539,12 @@ def verificar_e_corrigir_banco():
                 senha = EXCLUDED.senha,
                 is_admin = TRUE
         """, (admin_hash,))
+        
         conn.commit()
         cur.close()
         logger.info("✅ Banco verificado e otimizado!")
         return True
+        
     except Exception as e:
         conn.rollback()
         logger.error(f"Erro ao verificar banco: {str(e)}")
@@ -634,32 +553,38 @@ def verificar_e_corrigir_banco():
         release_db_connection(conn)
 
 # ============================================
-# ROTAS DE AUTENTICAÇÃO (100% iguais)
+# ROTAS DE AUTENTICAÇÃO
 # ============================================
 @app.route('/api/registrar', methods=['POST'])
 def registrar():
     try:
         if not request.is_json:
             return jsonify({'success': False, 'error': 'JSON requerido'}), 400
+        
         data = request.get_json()
         email = data.get('email', '').strip().lower()
         senha = data.get('senha', '')
         nome = data.get('nome', '').strip()
+        
         if not all([email, senha, nome]) or '@' not in email or len(senha) < 6:
             return jsonify({'success': False, 'error': 'Dados inválidos'}), 400
+        
         conn = get_db_connection()
         if not conn:
             return jsonify({'success': False, 'error': 'Erro no banco de dados'}), 500
+        
         try:
             cur = conn.cursor()
             cur.execute("SELECT id FROM usuarios WHERE email = %s", (email,))
             if cur.fetchone():
                 return jsonify({'success': False, 'error': 'Email já cadastrado'}), 400
+            
             hash_senha = bcrypt.hashpw(senha.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
             cur.execute("INSERT INTO usuarios (email, senha, nome) VALUES (%s, %s, %s) RETURNING id", 
                        (email, hash_senha, nome))
             usuario_id = cur.fetchone()[0]
             conn.commit()
+            
             token = criar_token(usuario_id)
             return jsonify({
                 'success': True, 
@@ -682,14 +607,18 @@ def login():
     try:
         if not request.is_json:
             return jsonify({'success': False, 'error': 'JSON requerido'}), 400
+        
         data = request.get_json()
         email = data.get('email', '').strip().lower()
         senha = data.get('senha', '')
+        
         usuario = get_usuario_by_email(email)
         if not usuario or not bcrypt.checkpw(senha.encode('utf-8'), usuario['senha'].encode('utf-8')):
             return jsonify({'success': False, 'error': 'Email ou senha incorretos'}), 401
+        
         atualizar_ultimo_login(usuario['id'])
         token = criar_token(usuario['id'])
+        
         return jsonify({
             'success': True,
             'token': token,
@@ -727,14 +656,16 @@ def logout():
     return jsonify({'success': True})
 
 # ============================================
-# ROTAS PÚBLICAS (100% iguais)
+# ROTAS PÚBLICAS (SEM AUTENTICAÇÃO)
 # ============================================
 @app.route('/api/boloes', methods=['GET'])
 def listar_boloes():
+    """ROTA PÚBLICA OTIMIZADA - Com Supabase Storage"""
     try:
         conn = get_db_connection()
         if not conn: 
             return jsonify({'success': False, 'error': 'Erro no banco'}), 500
+        
         cur = conn.cursor()
         cur.execute("""
             SELECT 
@@ -746,10 +677,13 @@ def listar_boloes():
             ORDER BY id DESC
             LIMIT 100
         """)
+        
         rows = cur.fetchall()
         boloes_list = []
+        
         for row in rows:
             bolao_id, nome, vendidas, total_cotas, imagem_url, video_url, pdf_url, detalhes, vendidos, preco = row
+            
             boloes_list.append({
                 'id': bolao_id,
                 'nome': nome,
@@ -762,27 +696,34 @@ def listar_boloes():
                 'vendidos': vendidos or 100,
                 'preco': float(preco) if preco else 1.00
             })
+        
         release_db_connection(conn)
         return jsonify({'success': True, 'boloes': boloes_list})
+    
     except Exception as e:
         logger.error(f"Erro na rota /api/boloes: {str(e)}")
         return jsonify({'success': False, 'error': 'Erro interno no servidor'}), 500
 
 @app.route('/api/health')
 def health_check():
+    """ROTA PÚBLICA - Health check"""
     conn = get_db_connection()
     db_status = "connected" if conn else "disconnected"
     if conn:
         release_db_connection(conn)
+    
+    # Verificar Supabase
     supabase_status = "connected"
     try:
+        # Tentar listar buckets
         supabase_admin.storage.list_buckets()
     except Exception as e:
         supabase_status = f"disconnected: {str(e)}"
+    
     return jsonify({
         "status": "online", 
         "service": "Norte Apostilas", 
-        "version": "1.4.0-hls",
+        "version": "1.3.0-supabase-cdn",
         "database": db_status,
         "supabase": supabase_status,
         "storage": BUCKET_NAME,
@@ -790,7 +731,7 @@ def health_check():
     })
 
 # ============================================
-# ROTAS QUE REQUEREM AUTENTICAÇÃO (100% iguais)
+# ROTAS QUE REQUEREM AUTENTICAÇÃO
 # ============================================
 @app.route('/api/checkout', methods=['POST'])
 @token_required
@@ -801,8 +742,10 @@ def checkout():
         data = request.get_json()
         if 'carrinho' not in data or not request.current_user.get('cpf'):
             return jsonify({"success": False, "error": "Dados inválidos ou CPF não cadastrado"}), 400
+        
         bolao_id = data.get('bolao_id')
         quantidade = data.get('quantidade', 1)
+        
         conn_preco = get_db_connection()
         preco_bolao = 1.00
         if conn_preco:
@@ -814,7 +757,9 @@ def checkout():
                     preco_bolao = float(result[0])
             finally:
                 release_db_connection(conn_preco)
+        
         total = preco_bolao * quantidade
+        
         conn_nome = get_db_connection()
         nome_bolao = "Apostila"
         if conn_nome:
@@ -826,8 +771,10 @@ def checkout():
                     nome_bolao = result[0]
             finally:
                 release_db_connection(conn_nome)
+        
         descricao = f"{nome_bolao} - {quantidade} unidade{'s' if quantidade > 1 else ''}"
         cpf_usuario = re.sub(r'\D', '', request.current_user['cpf'])
+
         payment_data = {
             "transaction_amount": float(total),
             "description": descricao,
@@ -838,14 +785,17 @@ def checkout():
                 "identification": {"type": "CPF", "number": cpf_usuario}
             }
         }
+
         result = sdk.payment().create(payment_data)
         if 'response' not in result:
             return jsonify({"success": False, "error": "Erro no Mercado Pago"}), 500
+        
         payment = result["response"]
         pix_data = payment.get("point_of_interaction", {}).get("transaction_data", {})
         pix_code = pix_data.get("qr_code", "")
         qr_code_base64 = pix_data.get("qr_code_base64", "")
         cartelas_compradas = data.get('cartelas', [])
+
         conn = get_db_connection()
         try:
             cur = conn.cursor()
@@ -861,6 +811,7 @@ def checkout():
             conn.commit()
         finally:
             release_db_connection(conn)
+
         return jsonify({
             "success": True,
             "order_id": payment["id"],
@@ -879,22 +830,28 @@ def check_status(order_id):
         result = sdk.payment().get(order_id)
         payment = result["response"]
         status = payment.get("status", "unknown")
+        
         conn = get_db_connection()
         if not conn:
             return jsonify({"success": False, "error": "Erro no banco"}), 500
+        
         try:
             cur = conn.cursor()
+            
             cur.execute("""
                 SELECT descricao, quantidade, cotas_contabilizadas, status 
                 FROM compras 
                 WHERE order_id = %s AND usuario_id = %s
             """, (order_id, request.current_user['id']))
             compra_info = cur.fetchone()
+            
             if compra_info:
                 descricao, quantidade, cotas_contabilizadas, status_atual = compra_info
                 bolao_nome = descricao.split(' - ')[0] if ' - ' in descricao else descricao
+                
                 cur.execute("SELECT id FROM boloes WHERE nome = %s", (bolao_nome,))
                 bolao_result = cur.fetchone()
+                
                 if status == 'approved' and not cotas_contabilizadas and bolao_result:
                     bolao_id = bolao_result[0]
                     cur.execute("""
@@ -902,19 +859,23 @@ def check_status(order_id):
                         SET cotas_vendidas = cotas_vendidas + %s 
                         WHERE id = %s
                     """, (quantidade, bolao_id))
+                    
                     cur.execute("""
                         UPDATE compras 
                         SET cotas_contabilizadas = TRUE 
                         WHERE order_id = %s
                     """, (order_id,))
+                
                 cur.execute("""
                     UPDATE compras 
                     SET status = %s, data_atualizacao = NOW()
                     WHERE order_id = %s AND usuario_id = %s
                     RETURNING valor, pix_code, qr_code_base64, descricao
                 """, (status, order_id, request.current_user['id']))
+                
                 updated = cur.fetchone()
                 conn.commit()
+                
                 if updated and status == 'pending':
                     return jsonify({
                         "success": True,
@@ -924,7 +885,9 @@ def check_status(order_id):
                         "qr_code_base64": updated[2],
                         "descricao": updated[3]
                     })
+            
             return jsonify({"success": True, "status": status})
+            
         finally:
             release_db_connection(conn)
     except Exception as e:
@@ -938,6 +901,7 @@ def compras_usuario():
         conn = get_db_connection()
         if not conn:
             return jsonify({'success': False, 'error': 'Erro no banco de dados'}), 500
+        
         try:
             cur = conn.cursor()
             cur.execute("""
@@ -946,11 +910,14 @@ def compras_usuario():
                 WHERE usuario_id = %s 
                 ORDER BY data_compra DESC
             """, (request.current_user['id'],))
+            
             rows = cur.fetchall()
             compras = []
+            
             for row in rows:
                 descricao = row[4] or 'Apostila'
                 bolao_nome = descricao.split(' - ')[0] if ' - ' in descricao else descricao
+                
                 pdf_url = None
                 try:
                     cur.execute("SELECT pdf_url FROM boloes WHERE nome = %s", (bolao_nome,))
@@ -959,6 +926,7 @@ def compras_usuario():
                         pdf_url = pdf_result[0]
                 except Exception as e:
                     logger.error(f"Erro ao buscar PDF: {e}")
+                
                 compras.append({
                     'order_id': row[0],
                     'valor': float(row[1]) if row[1] else 0.0,
@@ -968,57 +936,74 @@ def compras_usuario():
                     'quantidade': row[5] or 1,
                     'pdf_url': pdf_url
                 })
+            
             return jsonify({'success': True, 'compras': compras})
+        
         finally:
             release_db_connection(conn)
+    
     except Exception as e:
         logger.error(f"Erro ao carregar compras: {str(e)}")
         return jsonify({'success': False, 'error': f'Erro interno: {str(e)}'}), 500
 
 # ============================================
-# ROTAS ADMIN (100% iguais)
+# ROTAS ADMIN
 # ============================================
 @app.route('/api/admin/criar-bolao', methods=['POST'])
 @token_required
 def admin_criar_bolao():
     if not request.current_user.get('is_admin', False):
         return jsonify({'success': False, 'error': 'Acesso negado'}), 403
+
+    # Processar uploads para Supabase
     imagem_url = None
     video_url = None
     pdf_url = None
+
     if 'imagem' in request.files and request.files['imagem'].filename != '':
         file = request.files['imagem']
         imagem_url = salvar_media(file, "imagem")
+
     if 'video' in request.files and request.files['video'].filename != '':
         file = request.files['video']
         video_url = salvar_media(file, "video")
+
     if 'pdf' in request.files and request.files['pdf'].filename != '':
         file = request.files['pdf']
         pdf_url = salvar_media(file, "pdf")
+
     if not imagem_url and not video_url:
         return jsonify({'success': False, 'error': 'Adicione pelo menos uma imagem ou vídeo'}), 400
+
     nome = request.form.get('nome', '').strip()
     detalhes = request.form.get('detalhes', '').strip()
     vendidos = request.form.get('vendidos', '100').strip()
     preco = request.form.get('preco', '1.00').strip()
+
     if not nome:
         return jsonify({'success': False, 'error': 'Nome é obrigatório'}), 400
+
     conn = get_db_connection()
     if not conn:
         return jsonify({'success': False, 'error': 'Erro no banco de dados'}), 500
+    
     try:
         cur = conn.cursor()
+        
         cur.execute("SELECT id FROM boloes WHERE nome = %s", (nome,))
         if cur.fetchone():
             return jsonify({'success': False, 'error': 'Já existe um concurso com este nome'}), 400
+        
         cotas_totais = 100
         vendidos_int = int(vendidos) if vendidos.isdigit() else 100
         preco_float = float(preco) if preco.replace('.', '', 1).isdigit() else 1.00
+        
         cur.execute("""
             INSERT INTO boloes (nome, cotas_totais, imagem_url, video_url, pdf_url, detalhes, vendidos, preco)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """, (nome, cotas_totais, imagem_url, video_url, pdf_url, detalhes, vendidos_int, preco_float))
         conn.commit()
+        
         return jsonify({
             'success': True, 
             'message': 'Concurso criado com sucesso!',
@@ -1026,6 +1011,7 @@ def admin_criar_bolao():
             'video_url': video_url,
             'pdf_url': pdf_url
         })
+        
     except Exception as e:
         conn.rollback()
         logger.error(f"Erro ao criar bolão: {e}")
@@ -1038,9 +1024,11 @@ def admin_criar_bolao():
 def admin_listar_boloes():
     if not request.current_user.get('is_admin', False):
         return jsonify({'success': False, 'error': 'Acesso negado'}), 403
+    
     conn = get_db_connection()
     if not conn:
         return jsonify({'success': False, 'error': 'Erro no banco de dados'}), 500
+    
     try:
         cur = conn.cursor()
         cur.execute("""
@@ -1049,6 +1037,7 @@ def admin_listar_boloes():
             ORDER BY id DESC
         """)
         rows = cur.fetchall()
+        
         boloes = []
         for row in rows:
             boloes.append({
@@ -1064,6 +1053,7 @@ def admin_listar_boloes():
                 'detalhes': row[9] or '',
                 'preco': float(row[10]) if row[10] else 1.00
             })
+        
         return jsonify({'success': True, 'boloes': boloes})
     except Exception as e:
         logger.error(f"Erro ao listar bolões admin: {e}")
@@ -1076,46 +1066,61 @@ def admin_listar_boloes():
 def admin_editar_bolao():
     if not request.current_user.get('is_admin', False):
         return jsonify({'success': False, 'error': 'Acesso negado'}), 403
+    
     bolao_id = request.form.get('id')
     nome = request.form.get('nome', '').strip()
     cotas_totais = int(request.form.get('qtd_cotas', 100))
     vendidos = request.form.get('vendidos', '100').strip()
     detalhes = request.form.get('detalhes', '').strip()
     preco = request.form.get('preco', '1.00').strip()
+    
     if not bolao_id or not nome or cotas_totais < 1:
         return jsonify({'success': False, 'error': 'Dados inválidos'}), 400
+    
     conn = get_db_connection()
     if not conn:
         return jsonify({'success': False, 'error': 'Erro no banco de dados'}), 500
+    
     try:
         cur = conn.cursor()
+        
         cur.execute("""
             SELECT cotas_vendidas, imagem_url, video_url, pdf_url FROM boloes WHERE id = %s
         """, (bolao_id,))
         resultado = cur.fetchone()
+        
         if not resultado:
             return jsonify({'success': False, 'error': 'Concurso não encontrado'}), 404
+        
         cotas_vendidas, current_imagem, current_video, current_pdf = resultado
+        
         if cotas_totais < cotas_vendidas:
             return jsonify({
                 'success': False, 
                 'error': f'Não é possível reduzir para {cotas_totais} cotas. Já foram vendidas {cotas_vendidas}.'
             }), 400
+        
         nova_imagem_url = current_imagem
         nova_video_url = current_video
         nova_pdf_url = current_pdf
+        
+        # Processar nova imagem
         if 'imagem' in request.files and request.files['imagem'].filename != '':
             nova = salvar_media(request.files['imagem'], "imagem")
             if nova:
                 nova_imagem_url = nova
                 if current_imagem and 'default.jpg' not in current_imagem:
                     deletar_do_supabase(current_imagem)
+
+        # Processar novo vídeo
         if 'video' in request.files and request.files['video'].filename != '':
             nova = salvar_media(request.files['video'], "video")
             if nova:
                 nova_video_url = nova
                 if current_video:
                     deletar_do_supabase(current_video)
+
+        # Processar novo PDF
         if 'pdf' in request.files and request.files['pdf'].filename != '':
             file = request.files['pdf']
             if file and file.filename.lower().endswith('.pdf'):
@@ -1124,13 +1129,17 @@ def admin_editar_bolao():
                     nova_pdf_url = nova
                     if current_pdf:
                         deletar_do_supabase(current_pdf)
+
         if not nova_imagem_url and not nova_video_url:
             return jsonify({'success': False, 'error': 'É necessário ter pelo menos uma imagem ou vídeo'}), 400
+        
         cur.execute("SELECT id FROM boloes WHERE nome = %s AND id != %s", (nome, bolao_id))
         if cur.fetchone():
             return jsonify({'success': False, 'error': 'Já existe um concurso com este nome'}), 400
+        
         vendidos_int = int(vendidos) if vendidos.isdigit() else 100
         preco_float = float(preco) if preco.replace('.', '', 1).isdigit() else 1.00
+        
         cur.execute("""
             UPDATE boloes 
             SET nome = %s, cotas_totais = %s, imagem_url = %s, video_url = %s, 
@@ -1138,8 +1147,10 @@ def admin_editar_bolao():
             WHERE id = %s
         """, (nome, cotas_totais, nova_imagem_url, nova_video_url, 
               nova_pdf_url, detalhes, vendidos_int, preco_float, bolao_id))
+        
         conn.commit()
         return jsonify({'success': True, 'message': 'Concurso atualizado com sucesso!'})
+        
     except Exception as e:
         conn.rollback()
         logger.error(f"Erro ao editar bolão: {e}")
@@ -1152,32 +1163,40 @@ def admin_editar_bolao():
 def admin_atualizar_vendidos():
     if not request.current_user.get('is_admin', False):
         return jsonify({'success': False, 'error': 'Acesso negado'}), 403
+    
     data = request.get_json()
     bolao_id = data.get('bolao_id')
     vendidos = data.get('vendidos')
+    
     if not bolao_id or vendidos is None:
         return jsonify({'success': False, 'error': 'Dados inválidos'}), 400
+    
     try:
         vendidos_int = int(vendidos)
         if vendidos_int < 0:
             return jsonify({'success': False, 'error': 'Valor de vendidos não pode ser negativo'}), 400
     except ValueError:
         return jsonify({'success': False, 'error': 'Valor de vendidos inválido'}), 400
+    
     conn = get_db_connection()
     if not conn:
         return jsonify({'success': False, 'error': 'Erro no banco de dados'}), 500
+    
     try:
         cur = conn.cursor()
         cur.execute("SELECT id FROM boloes WHERE id = %s", (bolao_id,))
         if not cur.fetchone():
             return jsonify({'success': False, 'error': 'Concurso não encontrado'}), 404
+        
         cur.execute("""
             UPDATE boloes 
             SET vendidos = %s 
             WHERE id = %s
         """, (vendidos_int, bolao_id))
+        
         conn.commit()
         return jsonify({'success': True, 'message': 'Vendidos atualizados com sucesso!'})
+        
     except Exception as e:
         conn.rollback()
         logger.error(f"Erro ao atualizar vendidos: {e}")
@@ -1190,24 +1209,35 @@ def admin_atualizar_vendidos():
 def admin_remover_bolao(bolao_id):
     if not request.current_user.get('is_admin', False):
         return jsonify({'success': False, 'error': 'Acesso negado'}), 403
+    
     conn = get_db_connection()
     if not conn:
         return jsonify({'success': False, 'error': 'Erro no banco de dados'}), 500
+    
     try:
         cur = conn.cursor()
+        
         cur.execute("""
             SELECT imagem_url, video_url, pdf_url FROM boloes WHERE id = %s
         """, (bolao_id,))
         resultado = cur.fetchone()
+        
         if not resultado:
             return jsonify({'success': False, 'error': 'Concurso não encontrado'}), 404
+        
         imagem_url, video_url, pdf_url = resultado
+        
         cur.execute("DELETE FROM boloes WHERE id = %s", (bolao_id,))
+        
+        # Remover arquivos do Supabase
         for url in [imagem_url, video_url, pdf_url]:
             if url and 'default.jpg' not in url:
                 deletar_do_supabase(url)
+        
         conn.commit()
+        
         return jsonify({'success': True, 'message': 'Concurso removido com sucesso!'})
+        
     except Exception as e:
         conn.rollback()
         logger.error(f"Erro ao remover bolão: {e}")
@@ -1220,9 +1250,11 @@ def admin_remover_bolao(bolao_id):
 def admin_compras_todos():
     if not request.current_user.get('is_admin', False):
         return jsonify({'success': False, 'error': 'Acesso negado'}), 403
+    
     conn = get_db_connection()
     if not conn:
         return jsonify({'success': False, 'error': 'Erro no banco de dados'}), 500
+    
     try:
         cur = conn.cursor()
         cur.execute("""
@@ -1245,18 +1277,23 @@ def admin_compras_todos():
 def corrigir_cotas():
     if not request.current_user.get('is_admin', False):
         return jsonify({'success': False, 'error': 'Acesso negado'}), 403
+    
     conn = get_db_connection()
     if not conn:
         return jsonify({'success': False, 'error': 'Erro no banco de dados'}), 500
+    
     try:
         cur = conn.cursor()
+        
         cur.execute("UPDATE boloes SET cotas_vendidas = 0")
+        
         cur.execute("""
             SELECT c.descricao, c.quantidade 
             FROM compras c 
             WHERE c.status = 'approved' AND c.cotas_contabilizadas = FALSE
         """)
         compras_aprovadas = cur.fetchall()
+        
         for descricao, quantidade in compras_aprovadas:
             if ' - ' in descricao:
                 bolao_nome = descricao.split(' - ')[0]
@@ -1265,6 +1302,7 @@ def corrigir_cotas():
                     SET cotas_vendidas = cotas_vendidas + %s 
                     WHERE nome = %s
                 """, (quantidade, bolao_nome))
+        
         cur.execute("""
             UPDATE compras 
             SET cotas_contabilizadas = CASE 
@@ -1272,11 +1310,14 @@ def corrigir_cotas():
                 ELSE FALSE 
             END
         """)
+        
         conn.commit()
+        
         return jsonify({
             'success': True, 
             'message': 'Cotas corrigidas com sucesso!'
         })
+        
     except Exception as e:
         conn.rollback()
         logger.error(f"Erro ao corrigir cotas: {e}")
@@ -1285,8 +1326,9 @@ def corrigir_cotas():
         release_db_connection(conn)
 
 # ============================================
-# ROTAS FRONTEND (100% iguais)
+# ROTAS FRONTEND
 # ============================================
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -1316,9 +1358,14 @@ def teste_db():
 # ============================================
 @app.route('/api/supabase-test', methods=['GET'])
 def supabase_test():
+    """Rota para testar conexão com Supabase Storage"""
     try:
+        # Listar buckets
         buckets = supabase_admin.storage.list_buckets()
+        
+        # Listar arquivos no bucket
         files = supabase_admin.storage.from_(BUCKET_NAME).list()
+        
         return jsonify({
             'success': True,
             'project_id': 'dkgzrqbzotwrskdmjxbw',
@@ -1340,31 +1387,32 @@ def supabase_test():
 # INICIALIZAÇÃO DO APLICATIVO
 # ============================================
 def inicializar_aplicacao():
-    logger.info("=== NORTE APOSTILAS - SISTEMA DE VENDAS (HLS STREAMING) ===")
+    logger.info("=== NORTE APOSTILAS - SISTEMA DE VENDAS (SUPABASE STORAGE) ===")
     logger.info(f"Project ID: dkgzrqbzotwrskdmjxbw")
     logger.info("Inicializando pool de conexões...")
+    
     if not init_db_pool():
         logger.warning("⚠️  Pool não inicializado, usando conexões diretas")
+    
     logger.info("Inicializando Supabase Storage...")
     if inicializar_supabase_storage():
         logger.info("✅ Supabase Storage inicializado com sucesso!")
     else:
         logger.warning("⚠️  Aviso: Houve problemas ao inicializar Supabase Storage.")
+    
     logger.info("Verificando estrutura do banco de dados...")
     if verificar_e_corrigir_banco():
         logger.info("✅ Banco de dados verificado e otimizado!")
     else:
         logger.warning("⚠️  Aviso: Houve problemas ao verificar o banco de dados.")
-    # Verificar FFmpeg
-    if verificar_ffmpeg():
-        logger.info("✅ FFmpeg disponível - conversão HLS ativada")
-    else:
-        logger.error("❌ FFmpeg NÃO encontrado! Vídeos não poderão ser convertidos para HLS.")
-        logger.error("   Instale via aptfile no Render.")
+    
     logger.info("✅ Aplicação inicializada com sucesso!")
-    logger.info("✅ Vídeos serão convertidos para HLS e armazenados no Supabase")
+    logger.info("✅ Mídias serão armazenadas no Supabase Storage (CDN)")
+    logger.info(f"✅ Bucket: {BUCKET_NAME}")
+    logger.info("✅ URLs das mídias: https://dkgzrqbzotwrskdmjxbw.supabase.co/storage/v1/object/public/midia-concursos/...")
     logger.info("Login Admin: admin@norteapostilas.com / senha: admin123")
 
+# Inicializar ao iniciar a aplicação
 inicializar_aplicacao()
 
 # ============================================
