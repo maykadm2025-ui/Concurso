@@ -76,6 +76,16 @@
             margin-top: 10px;
             text-align: center;
         }
+        .youtube-badge {
+            background-color: #ff0000;
+            color: white;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+            display: inline-block;
+            margin-left: 5px;
+        }
     </style>
 </head>
 <body>
@@ -118,11 +128,18 @@
                             </div>
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label">Vídeo do Concurso (opcional)</label>
-                            <input type="file" id="video-bolao" class="form-control" accept="video/*" onchange="previewVideoCriar(event)">
-                            <small class="text-muted">MP4, WEBM, OGG – máx. 50MB</small>
-                            <div id="video-preview-container" class="media-preview-container" style="display: none;">
-                                <video id="video-preview" class="video-preview" controls></video>
+                            <label class="form-label">Vídeo (upload ou YouTube)</label>
+                            <div class="mb-2">
+                                <input type="file" id="video-bolao" class="form-control" accept="video/*" onchange="previewVideoCriar(event)">
+                                <small class="text-muted">MP4, WEBM, OGG – máx. 50MB</small>
+                                <div id="video-preview-container" class="media-preview-container" style="display: none;">
+                                    <video id="video-preview" class="video-preview" controls></video>
+                                </div>
+                            </div>
+                            <div class="mt-2">
+                                <label class="form-label">Ou link do YouTube</label>
+                                <input type="url" id="video-youtube-bolao" class="form-control" placeholder="https://www.youtube.com/watch?v=...">
+                                <small class="text-muted">Use o link completo da página do vídeo</small>
                             </div>
                         </div>
                         <div class="col-md-6">
@@ -239,9 +256,16 @@
                                 <div id="imagem-atual-container" class="media-preview-container mt-2"></div>
                             </div>
                             <div class="mb-3">
-                                <label class="form-label">Novo Vídeo (opcional)</label>
+                                <label class="form-label">Vídeo (upload)</label>
                                 <input type="file" id="editar-video" class="form-control" accept="video/*" onchange="previewVideoEditar(event)">
                                 <div id="video-atual-container" class="media-preview-container mt-2"></div>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Ou link do YouTube</label>
+                                <input type="url" id="editar-video-youtube" class="form-control" placeholder="https://www.youtube.com/watch?v=...">
+                                <div id="youtube-atual-container" class="media-preview-container mt-2">
+                                    <small id="youtube-atual-link" class="text-muted"></small>
+                                </div>
                             </div>
                             <div class="mb-3">
                                 <label class="form-label">Novo PDF da Apostila (opcional)</label>
@@ -354,6 +378,7 @@
             const preco = document.getElementById('preco-bolao').value.trim();
             const imagemInput = document.getElementById('imagem-bolao');
             const videoInput = document.getElementById('video-bolao');
+            const youtubeInput = document.getElementById('video-youtube-bolao');
             const pdfInput = document.getElementById('pdf-bolao');
 
             if (!nome) {
@@ -361,8 +386,11 @@
                 return;
             }
 
-            if (imagemInput.files.length === 0 && videoInput.files.length === 0) {
-                document.getElementById('msg-criacao').innerHTML = '<div class="alert alert-danger">Adicione pelo menos uma imagem ou vídeo</div>';
+            const hasImagem = imagemInput.files.length > 0;
+            const hasVideoFile = videoInput.files.length > 0;
+            const hasYoutube = youtubeInput.value.trim() !== '';
+            if (!hasImagem && !hasVideoFile && !hasYoutube) {
+                document.getElementById('msg-criacao').innerHTML = '<div class="alert alert-danger">Adicione pelo menos uma imagem, um vídeo ou um link do YouTube</div>';
                 return;
             }
 
@@ -371,8 +399,9 @@
             formData.append('detalhes', detalhes);
             formData.append('vendidos', vendidos || '100');
             formData.append('preco', preco || '1.00');
-            if (imagemInput.files.length > 0) formData.append('imagem', imagemInput.files[0]);
-            if (videoInput.files.length > 0) formData.append('video', videoInput.files[0]);
+            if (hasImagem) formData.append('imagem', imagemInput.files[0]);
+            if (hasVideoFile) formData.append('video', videoInput.files[0]);
+            if (hasYoutube) formData.append('youtube_url', youtubeInput.value.trim());
             if (pdfInput.files.length > 0) formData.append('pdf', pdfInput.files[0]);
 
             try {
@@ -417,9 +446,13 @@
                         mediaHTML += `<img src="${b.imagem_url}" style="max-width: 100px; max-height: 100px; border-radius: 5px;"><br>`;
                     }
                     if (b.video_url) {
-                        mediaHTML += `<video src="${b.video_url}" style="max-width: 100px; max-height: 100px; border-radius: 5px;" controls></video>`;
+                        if (b.video_url.includes('youtube.com') || b.video_url.includes('youtu.be')) {
+                            mediaHTML += `<span class="youtube-badge">YouTube</span>`;
+                        } else {
+                            mediaHTML += `<video src="${b.video_url}" style="max-width: 100px; max-height: 100px; border-radius: 5px;" controls></video>`;
+                        }
                     }
-                    if (!mediaHTML) mediaHTML = 'Sem mídia';
+                    if (!b.imagem_url && !b.video_url) mediaHTML = 'Sem mídia';
 
                     const tr = document.createElement('tr');
                     tr.innerHTML = `
@@ -454,14 +487,24 @@
             document.getElementById('editar-preco').value = preco || 1.00;
             document.getElementById('editar-detalhes').value = detalhes || '';
 
-            // Mídia atual
+            // Imagem atual
             let imagemHTML = imagemUrl ? `<img src="${imagemUrl}" class="imagem-preview">` : '<small>Sem imagem atual</small>';
             document.getElementById('imagem-atual-container').innerHTML = imagemHTML;
             document.getElementById('imagem-atual-container').style.display = 'block';
 
-            let videoHTML = videoUrl ? `<video src="${videoUrl}" class="video-preview" controls></video>` : '<small>Sem vídeo atual</small>';
-            document.getElementById('video-atual-container').innerHTML = videoHTML;
+            // Vídeo atual
+            if (videoUrl && (videoUrl.includes('youtube.com') || videoUrl.includes('youtu.be'))) {
+                document.getElementById('video-atual-container').innerHTML = '<small>Vídeo atual: link do YouTube</small>';
+                document.getElementById('editar-video-youtube').value = videoUrl;
+                document.getElementById('youtube-atual-container').querySelector('small').textContent = `Link atual: ${videoUrl}`;
+            } else {
+                let videoHTML = videoUrl ? `<video src="${videoUrl}" class="video-preview" controls></video>` : '<small>Sem vídeo atual</small>';
+                document.getElementById('video-atual-container').innerHTML = videoHTML;
+                document.getElementById('editar-video-youtube').value = '';
+                document.getElementById('youtube-atual-container').querySelector('small').textContent = '';
+            }
             document.getElementById('video-atual-container').style.display = 'block';
+            document.getElementById('youtube-atual-container').style.display = 'block';
 
             let pdfHTML = pdfUrl ? `<div class="alert alert-success"><i class="bi bi-file-pdf"></i> PDF disponível: <a href="${pdfUrl}" target="_blank">Ver PDF</a></div>` : '<small>Sem PDF atual</small>';
             document.getElementById('pdf-atual-container').innerHTML = pdfHTML;
@@ -479,6 +522,7 @@
             const detalhes = document.getElementById('editar-detalhes').value.trim();
             const imagemInput = document.getElementById('editar-imagem');
             const videoInput = document.getElementById('editar-video');
+            const youtubeInput = document.getElementById('editar-video-youtube');
             const pdfInput = document.getElementById('editar-pdf');
 
             if (!nome || cotas < 10) {
@@ -486,10 +530,14 @@
                 return;
             }
 
-            const hasCurrentMedia = document.getElementById('imagem-atual-container').innerHTML.includes('src') || 
-                                    document.getElementById('video-atual-container').innerHTML.includes('src');
-            const hasNewMedia = imagemInput.files.length > 0 || videoInput.files.length > 0;
-            if (!hasCurrentMedia && !hasNewMedia) {
+            const hasCurrentImagem = document.getElementById('imagem-atual-container').innerHTML.includes('src');
+            const hasCurrentVideo = document.getElementById('video-atual-container').innerHTML.includes('src') || 
+                                   document.getElementById('youtube-atual-container').querySelector('small')?.textContent.includes('Link atual');
+            const hasNewImagem = imagemInput.files.length > 0;
+            const hasNewVideoFile = videoInput.files.length > 0;
+            const hasNewYoutube = youtubeInput.value.trim() !== '';
+            
+            if (!hasCurrentImagem && !hasCurrentVideo && !hasNewImagem && !hasNewVideoFile && !hasNewYoutube) {
                 document.getElementById('msg-edicao').innerHTML = '<div class="alert alert-danger">É necessário ter pelo menos uma imagem ou vídeo</div>';
                 return;
             }
@@ -501,8 +549,9 @@
             formData.append('vendidos', vendidos || '100');
             formData.append('preco', preco || '1.00');
             formData.append('detalhes', detalhes);
-            if (imagemInput.files.length > 0) formData.append('imagem', imagemInput.files[0]);
-            if (videoInput.files.length > 0) formData.append('video', videoInput.files[0]);
+            if (hasNewImagem) formData.append('imagem', imagemInput.files[0]);
+            if (hasNewVideoFile) formData.append('video', videoInput.files[0]);
+            if (hasNewYoutube) formData.append('youtube_url', youtubeInput.value.trim());
             if (pdfInput.files.length > 0) formData.append('pdf', pdfInput.files[0]);
 
             try {

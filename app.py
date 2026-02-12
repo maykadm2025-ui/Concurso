@@ -774,7 +774,7 @@ def health_check():
     return jsonify({
         "status": "online", 
         "service": "Norte Apostilas", 
-        "version": "1.3.1-hls",
+        "version": "1.4.0-youtube",
         "database": db_status,
         "supabase": supabase_status,
         "storage": BUCKET_NAME,
@@ -1010,18 +1010,26 @@ def admin_criar_bolao():
     video_url = None
     pdf_url = None
 
+    # Upload de imagem (se houver)
     if 'imagem' in request.files and request.files['imagem'].filename != '':
         file = request.files['imagem']
         imagem_url = salvar_media(file, "imagem")
 
+    # Upload de vídeo (prioridade máxima)
     if 'video' in request.files and request.files['video'].filename != '':
         file = request.files['video']
         video_url = salvar_media(file, "video")
+    else:
+        # Se não houver upload, verifica link do YouTube
+        youtube_url = request.form.get('youtube_url', '').strip()
+        if youtube_url:
+            video_url = youtube_url  # Armazena o link diretamente
 
     if 'pdf' in request.files and request.files['pdf'].filename != '':
         file = request.files['pdf']
         pdf_url = salvar_media(file, "pdf")
 
+    # Pelo menos uma mídia (imagem ou vídeo)
     if not imagem_url and not video_url:
         return jsonify({'success': False, 'error': 'Adicione pelo menos uma imagem ou vídeo'}), 400
 
@@ -1154,6 +1162,7 @@ def admin_editar_bolao():
         nova_video_url = current_video
         nova_pdf_url = current_pdf
         
+        # Upload de nova imagem
         if 'imagem' in request.files and request.files['imagem'].filename != '':
             nova = salvar_media(request.files['imagem'], "imagem")
             if nova:
@@ -1161,13 +1170,24 @@ def admin_editar_bolao():
                 if current_imagem and 'default.jpg' not in current_imagem:
                     deletar_do_supabase(current_imagem)
 
+        # Upload de novo vídeo (prioridade)
         if 'video' in request.files and request.files['video'].filename != '':
             nova = salvar_media(request.files['video'], "video")
             if nova:
                 nova_video_url = nova
-                if current_video:
+                # Se o vídeo atual não for um link do YouTube, deleta
+                if current_video and not (current_video.startswith('http') and ('youtube.com' in current_video or 'youtu.be' in current_video)):
+                    deletar_do_supabase(current_video)
+        else:
+            # Se não enviou arquivo, verifica link do YouTube
+            youtube_url = request.form.get('youtube_url', '').strip()
+            if youtube_url:
+                nova_video_url = youtube_url
+                # Se o vídeo atual era um arquivo, deleta
+                if current_video and not (current_video.startswith('http') and ('youtube.com' in current_video or 'youtu.be' in current_video)):
                     deletar_do_supabase(current_video)
 
+        # Upload de novo PDF
         if 'pdf' in request.files and request.files['pdf'].filename != '':
             file = request.files['pdf']
             if file and file.filename.lower().endswith('.pdf'):
@@ -1177,6 +1197,7 @@ def admin_editar_bolao():
                     if current_pdf:
                         deletar_do_supabase(current_pdf)
 
+        # Pelo menos uma mídia
         if not nova_imagem_url and not nova_video_url:
             return jsonify({'success': False, 'error': 'É necessário ter pelo menos uma imagem ou vídeo'}), 400
         
@@ -1276,8 +1297,12 @@ def admin_remover_bolao(bolao_id):
         
         cur.execute("DELETE FROM boloes WHERE id = %s", (bolao_id,))
         
+        # Deleta arquivos, exceto links do YouTube
         for url in [imagem_url, video_url, pdf_url]:
             if url and 'default.jpg' not in url:
+                # Se for link do YouTube, não tenta deletar do storage
+                if url == video_url and (url.startswith('http') and ('youtube.com' in url or 'youtu.be' in url)):
+                    continue
                 deletar_do_supabase(url)
         
         conn.commit()
@@ -1429,7 +1454,7 @@ def supabase_test():
 # INICIALIZAÇÃO DO APLICATIVO
 # ============================================
 def inicializar_aplicacao():
-    logger.info("=== NORTE APOSTILAS - SISTEMA DE VENDAS (HLS ENABLED) ===")
+    logger.info("=== NORTE APOSTILAS - SISTEMA DE VENDAS (YouTube + HLS) ===")
     logger.info(f"Project ID: dkgzrqbzotwrskdmjxbw")
     logger.info("Inicializando pool de conexões...")
     
@@ -1449,7 +1474,7 @@ def inicializar_aplicacao():
         logger.warning("⚠️  Aviso: Houve problemas ao verificar o banco de dados.")
     
     logger.info("✅ Aplicação inicializada com sucesso!")
-    logger.info("✅ Vídeos serão convertidos para HLS automaticamente")
+    logger.info("✅ Vídeos podem ser enviados via upload (HLS) ou link do YouTube")
     logger.info("Login Admin: admin@norteapostilas.com / senha: admin123")
 
 # Inicializar ao iniciar a aplicação
