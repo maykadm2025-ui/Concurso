@@ -16,6 +16,9 @@ from werkzeug.utils import secure_filename
 from supabase import create_client, Client
 import base64
 from io import BytesIO
+import subprocess
+import tempfile
+import glob
 
 # Configuração de logging para Render
 logging.basicConfig(level=logging.INFO)
@@ -68,22 +71,13 @@ def inicializar_supabase_storage():
                     "allowed_mime_types": [
                         'image/*',
                         'video/*',
-                        'application/pdf'
+                        'application/pdf',
+                        'application/vnd.apple.mpegurl',
+                        'video/mp2t'
                     ]
                 }
             )
             logger.info(f"✅ Bucket '{BUCKET_NAME}' criado no Supabase Storage")
-            
-            # Configurar política de acesso público
-            try:
-                # Tornar o bucket completamente público para leitura
-                supabase_admin.storage.from_(BUCKET_NAME).create_signed_url(
-                    "teste.txt",
-                    3600  # 1 hora
-                )
-            except:
-                # A política já está configurada
-                pass
         else:
             logger.info(f"✅ Bucket '{BUCKET_NAME}' já existe no Supabase Storage")
             
@@ -92,7 +86,6 @@ def inicializar_supabase_storage():
             files = supabase_admin.storage.from_(BUCKET_NAME).list("imagens")
             default_exists = any(file['name'] == 'default.jpg' for file in files)
             if not default_exists:
-                # Criar uma imagem padrão simples (1x1 pixel transparente)
                 default_image = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
                 supabase_admin.storage.from_(BUCKET_NAME).upload(
                     "imagens/default.jpg",
@@ -188,74 +181,138 @@ def release_db_connection(conn):
         logger.error(f"Erro ao liberar conexão: {str(e)}")
 
 # ============================================
-# FUNÇÕES DE UPLOAD PARA SUPABASE
+# FUNÇÕES DE UPLOAD PARA SUPABASE - COM SUPORTE A HLS
 # ============================================
-def upload_para_supabase(file, filename, folder="imagens"):
-    """Faz upload de um arquivo para o Supabase Storage usando a chave de serviço"""
+def generate_hls(file_content, orig_extension, unique_id, folder):
+    """Converte vídeo para HLS e faz upload dos segmentos + playlist"""
     try:
-        # Gerar nome único para o arquivo
-        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-        file_extension = os.path.splitext(filename)[1].lower()
-        unique_filename = f"{timestamp}_{secure_filename(filename)}"
-        file_path = f"{folder}/{unique_filename}"
-        
-        # Ler o arquivo
-        file_content = file.read()
-        
-        # Validar tamanho do arquivo (50MB máximo)
-        if len(file_content) > 50 * 1024 * 1024:
-            logger.error(f"Arquivo muito grande: {len(file_content)} bytes")
-            return None
-        
-        # Fazer upload para o Supabase usando a chave de serviço
-        result = supabase_admin.storage.from_(BUCKET_NAME).upload(
-            file_path,
-            file_content,
-            {"content-type": file.content_type}
-        )
-        
-        if result:
-            # Obter URL pública (usando a chave pública para a URL)
-            file_url = f"https://dkgzrqbzotwrskdmjxbw.supabase.co/storage/v1/object/public/{BUCKET_NAME}/{file_path}"
-            
-            logger.info(f"✅ Arquivo enviado para Supabase: {file_url}")
-            return file_url
-        else:
-            logger.error("❌ Falha no upload para Supabase")
-            return None
-        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = os.path.join(tmpdir, f"input{orig_extension}")
+            with open(input_path, "wb") as f:
+                f.write(file_content)
+
+            hls_dir = os.path.join(tmpdir, "hls")
+            os.makedirs(hls_dir, exist_ok=True)
+            m3u8_path = os.path.join(hls_dir, "index.m3u8")
+
+            cmd = [
+                "ffmpeg", "-y", "-i", input_path,
+                "-preset", "veryfast",
+                "-g", "48",
+                "-sc_threshold", "0",
+                "-c:v", "libx264",
+                "-profile:v", "main",
+                "-crf", "23",
+                "-b:v", "600k",
+                "-maxrate", "650k",
+                "-bufsize", "1200k",
+                "-c:a", "aac",
+                "-b:a", "128k",
+                "-hls_time", "10",
+                "-hls_playlist_type", "vod",
+                "-hls_segment_filename", os.path.join(hls_dir, "segment%03d.ts"),
+                m3u8_path
+            ]
+
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                logger.error(f"FFmpeg erro: {result.stderr}")
+                return None
+
+            hls_folder = f"{folder}/{unique_id}"
+            for file_path in glob.glob(os.path.join(hls_dir, "*")):
+                rel_path = os.path.relpath(file_path, hls_dir)
+                supabase_path = f"{hls_folder}/{rel_path}"
+                with open(file_path, "rb") as f:
+                    data = f.read()
+                content_type = "application/vnd.apple.mpegurl" if rel_path.endswith(".m3u8") else "video/mp2t"
+                supabase_admin.storage.from_(BUCKET_NAME).upload(
+                    supabase_path, data, {"content-type": content_type}
+                )
+
+            return f"https://dkgzrqbzotwrskdmjxbw.supabase.co/storage/v1/object/public/{BUCKET_NAME}/{hls_folder}/index.m3u8"
+
     except Exception as e:
-        logger.error(f"❌ Erro ao fazer upload para Supabase: {str(e)}")
+        logger.error(f"Erro ao gerar HLS: {str(e)}")
         return None
 
-def deletar_do_supabase(file_url):
-    """Remove um arquivo do Supabase Storage usando a chave de serviço"""
+
+def upload_para_supabase(file, filename, folder="imagens"):
+    """Upload normal ou HLS para vídeos"""
     try:
-        if not file_url:
-            return True
-            
-        # Extrair o caminho do arquivo da URL
-        # Formato da URL: https://dkgzrqbzotwrskdmjxbw.supabase.co/storage/v1/object/public/midia-concursos/...
-        if BUCKET_NAME in file_url and "storage/v1/object/public" in file_url:
-            # Extrair o caminho após "object/public/{BUCKET_NAME}/"
-            parts = file_url.split(f"object/public/{BUCKET_NAME}/")
-            if len(parts) > 1:
-                file_path = parts[1]
-                # Remover o arquivo usando a chave de serviço
-                supabase_admin.storage.from_(BUCKET_NAME).remove([file_path])
-                logger.info(f"✅ Arquivo removido do Supabase: {file_path}")
-                return True
-        return False
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        base_name = secure_filename(os.path.splitext(filename)[0])
+        unique_id = f"{timestamp}_{base_name}"
+        file_extension = os.path.splitext(filename)[1].lower()
+
+        file_content = file.read()
+
+        if len(file_content) > 50 * 1024 * 1024:
+            logger.error("Arquivo muito grande")
+            return None
+
+        # Não vídeo → upload direto
+        if folder != "videos":
+            unique_filename = f"{unique_id}{file_extension}"
+            file_path = f"{folder}/{unique_filename}"
+            supabase_admin.storage.from_(BUCKET_NAME).upload(
+                file_path, file_content, {"content-type": file.content_type or "application/octet-stream"}
+            )
+            return f"https://dkgzrqbzotwrskdmjxbw.supabase.co/storage/v1/object/public/{BUCKET_NAME}/{file_path}"
+
+        # Vídeo → tenta HLS
+        hls_url = generate_hls(file_content, file_extension, unique_id, folder)
+        if hls_url:
+            logger.info(f"HLS gerado: {hls_url}")
+            return hls_url
+
+        # Fallback: upload direto do MP4
+        logger.warning("HLS falhou → upload direto do MP4")
+        unique_filename = f"{unique_id}{file_extension}"
+        file_path = f"videos/{unique_filename}"
+        supabase_admin.storage.from_(BUCKET_NAME).upload(
+            file_path, file_content, {"content-type": "video/mp4"}
+        )
+        return f"https://dkgzrqbzotwrskdmjxbw.supabase.co/storage/v1/object/public/{BUCKET_NAME}/{file_path}"
+
     except Exception as e:
-        logger.error(f"❌ Erro ao remover arquivo do Supabase: {str(e)}")
+        logger.error(f"Erro no upload: {str(e)}")
+        return None
+
+
+def deletar_do_supabase(file_url):
+    """Remove arquivo único ou pasta inteira HLS"""
+    try:
+        if not file_url or "default.jpg" in file_url:
+            return True
+
+        if f"object/public/{BUCKET_NAME}/" not in file_url:
+            return False
+
+        path = file_url.split(f"object/public/{BUCKET_NAME}/")[1]
+
+        if path.endswith(".m3u8"):
+            # Pasta HLS
+            folder = "/".join(path.split("/")[:-1])
+            files = supabase_admin.storage.from_(BUCKET_NAME).list(folder)
+            to_delete = [f"{folder}/{item['name']}" for item in files if isinstance(item, dict) and 'name' in item]
+            if to_delete:
+                supabase_admin.storage.from_(BUCKET_NAME).remove(to_delete)
+        else:
+            # Arquivo único
+            supabase_admin.storage.from_(BUCKET_NAME).remove([path])
+
+        logger.info(f"Arquivo/pasta removido: {file_url}")
+        return True
+    except Exception as e:
+        logger.error(f"Erro ao deletar: {str(e)}")
         return False
 
+
 def salvar_media(file, media_type="imagem"):
-    """Salva mídia no Supabase e retorna URL"""
     if not file or file.filename == '':
         return None
     
-    # Validar tipo de arquivo
     ALLOWED_IMAGE = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
     ALLOWED_VIDEO = {'mp4', 'webm', 'ogg', 'mov', 'avi', 'm4v'}
     ALLOWED_PDF = {'pdf'}
@@ -263,7 +320,6 @@ def salvar_media(file, media_type="imagem"):
     filename = secure_filename(file.filename)
     file_ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
     
-    # Determinar pasta baseada no tipo
     if file_ext in ALLOWED_IMAGE:
         folder = "imagens"
     elif file_ext in ALLOWED_VIDEO:
@@ -274,7 +330,6 @@ def salvar_media(file, media_type="imagem"):
         logger.error(f"Tipo de arquivo não permitido: {file_ext}")
         return None
     
-    # Fazer upload para Supabase
     return upload_para_supabase(file, filename, folder)
 
 # ============================================
@@ -660,7 +715,6 @@ def logout():
 # ============================================
 @app.route('/api/boloes', methods=['GET'])
 def listar_boloes():
-    """ROTA PÚBLICA OTIMIZADA - Com Supabase Storage"""
     try:
         conn = get_db_connection()
         if not conn: 
@@ -706,16 +760,13 @@ def listar_boloes():
 
 @app.route('/api/health')
 def health_check():
-    """ROTA PÚBLICA - Health check"""
     conn = get_db_connection()
     db_status = "connected" if conn else "disconnected"
     if conn:
         release_db_connection(conn)
     
-    # Verificar Supabase
     supabase_status = "connected"
     try:
-        # Tentar listar buckets
         supabase_admin.storage.list_buckets()
     except Exception as e:
         supabase_status = f"disconnected: {str(e)}"
@@ -723,7 +774,7 @@ def health_check():
     return jsonify({
         "status": "online", 
         "service": "Norte Apostilas", 
-        "version": "1.3.0-supabase-cdn",
+        "version": "1.3.1-hls",
         "database": db_status,
         "supabase": supabase_status,
         "storage": BUCKET_NAME,
@@ -955,7 +1006,6 @@ def admin_criar_bolao():
     if not request.current_user.get('is_admin', False):
         return jsonify({'success': False, 'error': 'Acesso negado'}), 403
 
-    # Processar uploads para Supabase
     imagem_url = None
     video_url = None
     pdf_url = None
@@ -1104,7 +1154,6 @@ def admin_editar_bolao():
         nova_video_url = current_video
         nova_pdf_url = current_pdf
         
-        # Processar nova imagem
         if 'imagem' in request.files and request.files['imagem'].filename != '':
             nova = salvar_media(request.files['imagem'], "imagem")
             if nova:
@@ -1112,7 +1161,6 @@ def admin_editar_bolao():
                 if current_imagem and 'default.jpg' not in current_imagem:
                     deletar_do_supabase(current_imagem)
 
-        # Processar novo vídeo
         if 'video' in request.files and request.files['video'].filename != '':
             nova = salvar_media(request.files['video'], "video")
             if nova:
@@ -1120,7 +1168,6 @@ def admin_editar_bolao():
                 if current_video:
                     deletar_do_supabase(current_video)
 
-        # Processar novo PDF
         if 'pdf' in request.files and request.files['pdf'].filename != '':
             file = request.files['pdf']
             if file and file.filename.lower().endswith('.pdf'):
@@ -1229,7 +1276,6 @@ def admin_remover_bolao(bolao_id):
         
         cur.execute("DELETE FROM boloes WHERE id = %s", (bolao_id,))
         
-        # Remover arquivos do Supabase
         for url in [imagem_url, video_url, pdf_url]:
             if url and 'default.jpg' not in url:
                 deletar_do_supabase(url)
@@ -1358,12 +1404,8 @@ def teste_db():
 # ============================================
 @app.route('/api/supabase-test', methods=['GET'])
 def supabase_test():
-    """Rota para testar conexão com Supabase Storage"""
     try:
-        # Listar buckets
         buckets = supabase_admin.storage.list_buckets()
-        
-        # Listar arquivos no bucket
         files = supabase_admin.storage.from_(BUCKET_NAME).list()
         
         return jsonify({
@@ -1387,7 +1429,7 @@ def supabase_test():
 # INICIALIZAÇÃO DO APLICATIVO
 # ============================================
 def inicializar_aplicacao():
-    logger.info("=== NORTE APOSTILAS - SISTEMA DE VENDAS (SUPABASE STORAGE) ===")
+    logger.info("=== NORTE APOSTILAS - SISTEMA DE VENDAS (HLS ENABLED) ===")
     logger.info(f"Project ID: dkgzrqbzotwrskdmjxbw")
     logger.info("Inicializando pool de conexões...")
     
@@ -1407,9 +1449,7 @@ def inicializar_aplicacao():
         logger.warning("⚠️  Aviso: Houve problemas ao verificar o banco de dados.")
     
     logger.info("✅ Aplicação inicializada com sucesso!")
-    logger.info("✅ Mídias serão armazenadas no Supabase Storage (CDN)")
-    logger.info(f"✅ Bucket: {BUCKET_NAME}")
-    logger.info("✅ URLs das mídias: https://dkgzrqbzotwrskdmjxbw.supabase.co/storage/v1/object/public/midia-concursos/...")
+    logger.info("✅ Vídeos serão convertidos para HLS automaticamente")
     logger.info("Login Admin: admin@norteapostilas.com / senha: admin123")
 
 # Inicializar ao iniciar a aplicação

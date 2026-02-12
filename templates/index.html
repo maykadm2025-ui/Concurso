@@ -5,10 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Norte Apostilas | Referência em Apostilas para Prefeituras</title>
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <!-- HLS.js para reprodução HLS em qualquer navegador -->
-    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <!-- hls.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13"></script>
     <style>
-        /* CSS COMPLETAMENTE IGUAL AO SEU ORIGINAL */
         :root {
             --primary: #00ff00;
             --secondary: #39ff14;
@@ -679,7 +678,7 @@
         </div>
     </div>
 
-    <!-- Modais (idênticos) -->
+    <!-- Modais -->
     <div id="modal-login" class="modal">
         <div class="modal-content">
             <div class="modal-header">
@@ -798,42 +797,36 @@
     </div>
 
     <script>
-        // ==================== FUNÇÕES HLS (NOVAS) ====================
-        function initHLSPlayer(videoElement, videoUrl) {
-            if (!videoElement || !videoUrl) return;
-            // Se a URL não for .m3u8, usa diretamente
-            if (!videoUrl.endsWith('.m3u8')) {
-                videoElement.src = videoUrl;
-                return;
-            }
-            // Suporte nativo HLS (Safari)
-            if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
-                videoElement.src = videoUrl;
-            } 
-            // hls.js para os demais navegadores
-            else if (Hls.isSupported()) {
-                const hls = new Hls({
-                    maxBufferLength: 30,
-                    maxMaxBufferLength: 60,
-                    enableWorker: true
-                });
-                hls.loadSource(videoUrl);
-                hls.attachMedia(videoElement);
-            } else {
-                // Fallback: tenta reproduzir diretamente (raro)
-                videoElement.src = videoUrl;
-            }
-        }
-
-        // ==================== TODAS AS DEMAIS FUNÇÕES (100% IGUAIS) ====================
-        // (Apenas as funções renderizarBoloes e verDetalhes foram modificadas
-        //  para usar initHLSPlayer e IDs únicos nos vídeos)
-        
         let usuario = null;
         let token = localStorage.getItem('token');
         let boloes = [];
         let compraAtual = { bolao: null, quantidade: 1 };
         let polling = null;
+
+        // Inicializa players HLS (novos vídeos) e fallback MP4 (vídeos antigos)
+        function initHlsPlayers() {
+            document.querySelectorAll('.hls-player').forEach(video => {
+                if (video.hlsInitialized) return;
+                
+                const src = video.dataset.hlsSrc;
+                if (!src) return;
+
+                if (src.endsWith('.m3u8') && Hls.isSupported()) {
+                    const hls = new Hls({
+                        startLevel: -1, // deixa o hls.js escolher a melhor qualidade automaticamente
+                        capLevelToPlayerSize: true
+                    });
+                    hls.loadSource(src);
+                    hls.attachMedia(video);
+                    video.hls = hls;
+                } else {
+                    // Vídeos antigos (MP4 direto) ou iOS nativo HLS
+                    video.src = src;
+                }
+                
+                video.hlsInitialized = true;
+            });
+        }
 
         document.addEventListener('DOMContentLoaded', function() {
             token = localStorage.getItem('token');
@@ -851,6 +844,7 @@
                     method: 'GET',
                     headers: { 'Authorization': `Bearer ${token}` }
                 });
+
                 const data = await response.json();
                 if (data.success) {
                     usuario = data.usuario;
@@ -891,21 +885,26 @@
         async function fazerLogin() {
             const email = document.getElementById('login-email').value.trim().toLowerCase();
             const senha = document.getElementById('login-senha').value;
+
             if (!email || !senha) {
                 showAlert('Preencha email e senha', 'error');
                 return;
             }
+
             try {
                 const response = await fetch('/api/login', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ email, senha })
                 });
+
                 const data = await response.json();
+
                 if (data.success) {
                     token = data.token;
                     localStorage.setItem('token', token);
                     usuario = data.usuario;
+
                     closeModal();
                     atualizarInterfaceUsuario();
                     carregarBoloes();
@@ -925,20 +924,25 @@
             const email = document.getElementById('register-email').value.trim().toLowerCase();
             const senha = document.getElementById('register-senha').value;
             const senha2 = document.getElementById('register-senha2').value;
+
             if (!nome || !email || !senha || !senha2) return showAlert('Preencha todos os campos', 'error');
             if (senha !== senha2) return showAlert('As senhas não coincidem', 'error');
             if (senha.length < 6) return showAlert('Senha deve ter pelo menos 6 caracteres', 'error');
+
             try {
                 const response = await fetch('/api/registrar', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ nome, email, senha })
                 });
+
                 const data = await response.json();
+
                 if (data.success) {
                     token = data.token;
                     localStorage.setItem('token', token);
                     usuario = data.usuario;
+
                     closeModal();
                     atualizarInterfaceUsuario();
                     carregarBoloes();
@@ -967,22 +971,23 @@
             });
         }
 
-        // ===== FUNÇÃO MODIFICADA: carregarBoloes (100% igual) =====
         async function carregarBoloes() {
             const loader = document.getElementById('boloes-loader');
             const grid = document.getElementById('boloes-grid');
+            
             if (loader) loader.style.display = 'block';
+            
             try {
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 10000);
-                const response = await fetch('/api/boloes', {
-                    signal: controller.signal
-                });
+                
+                const response = await fetch('/api/boloes', { signal: controller.signal });
                 clearTimeout(timeoutId);
-                if (!response.ok) {
-                    throw new Error(`Erro HTTP: ${response.status}`);
-                }
+                
+                if (!response.ok) throw new Error(`Erro HTTP: ${response.status}`);
+                
                 const data = await response.json();
+                
                 if (data.success && data.boloes && data.boloes.length > 0) {
                     boloes = data.boloes;
                     renderizarBoloes(boloes);
@@ -1003,12 +1008,13 @@
             }
         }
 
-        // ===== FUNÇÃO MODIFICADA: renderizarBoloes (agora com HLS) =====
         function renderizarBoloes(listaBoloes) {
             const grid = document.getElementById('boloes-grid');
             if (!grid) return;
+            
             const loader = document.getElementById('boloes-loader');
             if (loader) loader.style.display = 'none';
+            
             grid.innerHTML = '';
             
             listaBoloes.forEach(bolao => {
@@ -1025,10 +1031,7 @@
                 
                 let mediaHTML = '';
                 if (bolao.video_url) {
-                    // ID único para o vídeo (usado pelo initHLSPlayer)
-                    const videoId = `video-${bolao.id}`;
-                    // Não coloca src diretamente, o player será iniciado via JS
-                    mediaHTML = `<video id="${videoId}" class="imagem-bolao" controls preload="metadata"></video>`;
+                    mediaHTML = `<video class="imagem-bolao hls-player" data-hls-src="${bolao.video_url}" controls preload="metadata"></video>`;
                 } else if (bolao.imagem_url) {
                     mediaHTML = `<img src="${bolao.imagem_url}" alt="${bolao.nome}" class="imagem-bolao" loading="lazy">`;
                 }
@@ -1063,22 +1066,16 @@
                     </div>
                 `;
                 grid.appendChild(card);
-                
-                // Inicializa HLS se for vídeo
-                if (bolao.video_url) {
-                    const videoEl = document.getElementById(`video-${bolao.id}`);
-                    if (videoEl) {
-                        initHLSPlayer(videoEl, bolao.video_url);
-                    }
-                }
             });
+
+            initHlsPlayers();
         }
 
-        // ===== FUNÇÃO MODIFICADA: verDetalhes (agora com HLS) =====
         function verDetalhes(bolao) {
             document.getElementById('detalhes-titulo').textContent = bolao.nome;
             
             let detalhesHTML = '';
+            
             let mediaHTML = '';
             let containerClass = 'container-imagem-detalhes';
             
@@ -1101,6 +1098,7 @@
                 if (totalMedia === 2) {
                     containerClass += ' has-two-media';
                 }
+                
                 mediaHTML += `<div class="${containerClass}">`;
                 
                 if (hasImage) {
@@ -1108,8 +1106,7 @@
                 }
                 
                 if (hasVideo) {
-                    // Vídeo de detalhes: ID fixo para facilitar a inicialização
-                    mediaHTML += `<video id="detalhes-video" class="imagem-detalhes" controls preload="metadata"></video>`;
+                    mediaHTML += `<video class="imagem-detalhes hls-player" data-hls-src="${bolao.video_url}" controls preload="metadata"></video>`;
                 }
                 
                 mediaHTML += '</div>';
@@ -1136,15 +1133,7 @@
             }
             
             document.getElementById('detalhes-conteudo').innerHTML = detalhesHTML;
-            
-            // Inicializa HLS no vídeo de detalhes, se existir
-            if (hasVideo) {
-                const videoEl = document.getElementById('detalhes-video');
-                if (videoEl) {
-                    initHLSPlayer(videoEl, bolao.video_url);
-                }
-            }
-            
+            initHlsPlayers(); // importante para vídeos no modal
             document.getElementById('modal-detalhes').classList.add('active');
         }
 
@@ -1157,14 +1146,17 @@
                 const bolaoId = parseInt(e.target.getAttribute('data-bolao-id'));
                 const bolao = boloes.find(b => b.id === bolaoId);
                 if (!bolao) return;
+
                 if (!usuario) {
                     openModal('login');
                     return;
                 }
+
                 compraAtual = {
                     bolao: { id: bolaoId, nome: bolao.nome },
                     quantidade: 1
                 };
+
                 if (!usuario.cpf) {
                     abrirModalCpf();
                 } else {
@@ -1179,11 +1171,14 @@
                 showAlert('Concurso não encontrado', 'error');
                 return;
             }
+
             const quantidade = 1;
             const valor = quantidade * bolao.preco;
+
             document.getElementById('modal-pix').classList.add('active');
             document.getElementById('pix-valor').textContent = `Valor: R$ ${valor.toFixed(2)}`;
             document.getElementById('pix-info').textContent = `${bolao.nome} - 1 unidade`;
+
             try {
                 const response = await fetch('/api/checkout', {
                     method: 'POST',
@@ -1201,6 +1196,7 @@
                         cartelas: []
                     })
                 });
+
                 const data = await response.json();
                 if (data.success) {
                     document.getElementById('qr-img').src = `data:image/png;base64,${data.pix_qr_base64}`;
@@ -1230,6 +1226,7 @@
                 }
                 return;
             }
+            
             try {
                 const response = await fetch('/api/compras-usuario', {
                     headers: { 'Authorization': `Bearer ${token}` }
@@ -1237,16 +1234,21 @@
                 const data = await response.json();
                 const list = document.getElementById('compras-list');
                 const placeholder = document.getElementById('compras-placeholder');
+                
                 if (data.success && data.compras.length > 0) {
                     if (placeholder) placeholder.style.display = 'none';
                     list.innerHTML = '';
+                    
                     data.compras.forEach(c => {
                         const item = document.createElement('div');
                         item.style = 'background: #f9f9f9; padding: 20px; border-radius: 10px; margin-bottom: 15px; border: 1px solid #eeeeee;';
+                        
                         let statusHTML = '';
                         let pdfButtonHTML = '';
+                        
                         if (c.status === 'approved') {
                             statusHTML = `<span style="color: var(--success); font-weight: bold;">✅ Aprovado</span>`;
+                            
                             if (c.pdf_url) {
                                 pdfButtonHTML = `
                                     <div style="margin-top: 10px;">
@@ -1262,6 +1264,7 @@
                                     </div>
                                 `;
                             }
+                            
                             statusHTML += `
                                 <div style="margin-top: 10px; color: var(--warning); font-weight: bold;">
                                     "Confie na sua preparação, ela é sua melhor sorte!"
@@ -1279,6 +1282,7 @@
                         } else {
                             statusHTML = `<span style="color: #ff0000;">${c.status}</span>`;
                         }
+                        
                         item.innerHTML = `
                             <div style="font-size: 18px; font-weight: 600; margin-bottom: 5px;">${c.descricao || 'Apostila'}</div>
                             <div style="color: #555555; font-size: 14px; margin: 8px 0;">
@@ -1318,6 +1322,7 @@
                     document.getElementById('pix-code').setAttribute('data-code', data.pix_code || '');
                     document.getElementById('status-text').textContent = '⏳ Aguardando pagamento...';
                     document.getElementById('status-text').className = 'status-pending';
+                    
                     startPolling(order_id);
                 } else {
                     showAlert('Pagamento já aprovado ou inválido', 'error');
@@ -1354,6 +1359,7 @@
                 document.getElementById('cpf-error').style.display = 'block';
                 return;
             }
+            
             try {
                 const response = await fetch('/api/salvar-cpf', {
                     method: 'POST',
@@ -1363,6 +1369,7 @@
                     },
                     body: JSON.stringify({ cpf: cpfInput })
                 });
+                
                 const data = await response.json();
                 if (data.success) {
                     usuario.cpf = data.cpf;
@@ -1381,32 +1388,40 @@
 
         function startPolling(orderId) {
             if (polling) clearInterval(polling);
+            
             let tentativas = 0;
             const maxTentativas = 120;
+            
             polling = setInterval(async () => {
                 tentativas++;
+                
                 try {
                     const res = await fetch(`/api/status/${orderId}`, {
                         headers: { 'Authorization': `Bearer ${token}` }
                     });
                     const data = await res.json();
+                    
                     if (data.status === 'approved') {
                         document.getElementById('status-text').textContent = "✅ Pagamento Aprovado!";
                         document.getElementById('status-text').className = "status-approved";
+                        
                         clearInterval(polling);
                         polling = null;
+                        
                         setTimeout(() => {
                             fecharPix();
                             showSuccessPopup();
                             carregarCompras();
                             carregarBoloes();
                         }, 2000);
+                        
                     } else if (tentativas >= maxTentativas) {
                         clearInterval(polling);
                         polling = null;
                         document.getElementById('status-text').textContent = "⚠️ Tempo esgotado. Verifique em Minhas Compras.";
                         document.getElementById('status-text').style.color = "#ff9800";
                     }
+                    
                 } catch (e) {
                     console.error("Erro no polling:", e);
                     if (tentativas >= maxTentativas) {
@@ -1483,10 +1498,13 @@
                 document.getElementById('conta-info').innerHTML = '';
                 return;
             }
+
             document.getElementById('conta-placeholder').style.display = 'none';
+
             const cpfFormatado = usuario.cpf 
                 ? usuario.cpf.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4') 
                 : 'Não cadastrado';
+
             document.getElementById('conta-info').innerHTML = `
                 <div style="display: flex; align-items: center; gap: 20px; margin-bottom: 40px;">
                     <div class="user-avatar" style="width: 100px; height: 100px; font-size: 40px;">
@@ -1523,9 +1541,12 @@
         function switchTab(tab) {
             document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            
             const tabBtn = document.querySelector(`.tab-btn[onclick*="${tab}"]`);
             if (tabBtn) tabBtn.classList.add('active');
+            
             document.getElementById('tab-' + tab).classList.add('active');
+            
             if (tab === 'compras' && usuario) {
                 carregarCompras();
             }
