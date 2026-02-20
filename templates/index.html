@@ -231,72 +231,6 @@
             border-radius: 12px;
             border: none;
         }
-
-        /* ─── NOVO: click-to-play wrapper (card) ───────────────────────────
-           O vídeo só carrega quando o usuário clicar.
-           Resolve múltiplos vídeos travando a página no mobile.
-        ──────────────────────────────────────────────────────────────────── */
-        .video-wrapper {
-            position: relative;
-            width: 80%;
-            margin: 0 auto;
-            border-radius: 12px;
-            overflow: hidden;
-            background: #000;
-            cursor: pointer;
-        }
-        .video-wrapper video {
-            width: 100%;
-            display: block;
-            max-height: 300px;
-            object-fit: contain;
-        }
-        .video-play-overlay {
-            position: absolute;
-            inset: 0;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            background: rgba(0,0,0,0.52);
-            transition: opacity 0.25s ease;
-        }
-        .video-wrapper.playing .video-play-overlay {
-            opacity: 0;
-            pointer-events: none;
-        }
-        .play-icon {
-            width: 56px; height: 56px;
-            border-radius: 50%;
-            background: rgba(0,255,0,0.88);
-            display: flex; align-items: center; justify-content: center;
-            margin-bottom: 8px;
-        }
-        .play-icon svg { width: 28px; height: 28px; fill: #000; margin-left: 4px; }
-        .play-label { color: #fff; font-size: 13px; font-weight: 600; letter-spacing: 0.5px; }
-
-        /* ─── NOVO: click-to-play wrapper (modal detalhes) ─────────────── */
-        .video-detalhes-wrapper {
-            position: relative;
-            width: 80%;
-            max-width: 80%;
-            border-radius: 12px;
-            overflow: hidden;
-            background: #000;
-            cursor: pointer;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-        }
-        .video-detalhes-wrapper video {
-            width: 100%;
-            display: block;
-            max-height: 400px;
-            object-fit: contain;
-        }
-        .container-imagem-detalhes.has-two-media .video-detalhes-wrapper {
-            width: 100%;
-            max-width: 100%;
-        }
-        /* ──────────────────────────────────────────────────────────────── */
         
         .badge-preco {
             position: absolute;
@@ -592,11 +526,6 @@
             iframe.youtube-embed {
                 width: 100%;
             }
-
-            /* Botão play maior no mobile */
-            .play-icon { width: 64px; height: 64px; }
-            .play-icon svg { width: 32px; height: 32px; }
-            .video-wrapper { width: 100%; }
             
             .vendas-texto {
                 font-size: 9px;
@@ -898,77 +827,38 @@
             }
             return videoId ? `https://www.youtube.com/embed/${videoId}` : url;
         }
+
+        function isMobileViewport() {
+            return window.matchMedia('(max-width: 768px)').matches;
+        }
         // ------------------------------------------------------------------------
-
-        // ── NOVO: click-to-play + HLS otimizado para mobile ──────────────────────
-        // Por que resolve o travamento:
-        //   1. preload="none"        → zero bytes baixados até o clique
-        //   2. startLevel:0          → começa SEMPRE em 360p (rendição mais leve)
-        //   3. capLevelToPlayerSize  → nunca baixa resolução maior que a tela
-        //   4. maxBufferSize:20MB    → não esgota RAM do mobile
-        //   5. Um vídeo por vez      → sem concorrência de downloads na lista
-        const PLAY_OVERLAY_HTML = `
-            <div class="video-play-overlay">
-                <div class="play-icon">
-                    <svg viewBox="0 0 24 24"><polygon points="5,3 19,12 5,21"/></svg>
-                </div>
-                <span class="play-label">Toque para reproduzir</span>
-            </div>`;
-
-        function buildVideoWrapperHTML(src, wrapperClass) {
-            return `<div class="${wrapperClass}" data-hls-src="${src}">
-                <video preload="none" playsinline webkit-playsinline controls></video>
-                ${PLAY_OVERLAY_HTML}
-            </div>`;
-        }
-
-        function criarVideoPlayer(wrapperEl) {
-            const src = wrapperEl.dataset.hlsSrc;
-            const videoEl = wrapperEl.querySelector('video');
-            if (!src || !videoEl) return;
-
-            wrapperEl.addEventListener('click', function handler() {
-                wrapperEl.removeEventListener('click', handler);
-                wrapperEl.classList.add('playing');
-
-                if (src.endsWith('.m3u8') && Hls.isSupported()) {
-                    const hls = new Hls({
-                        startLevel: 0,               // sempre começa em 360p
-                        capLevelToPlayerSize: true,  // não baixa acima da resolução da tela
-                        maxBufferLength: 20,
-                        maxMaxBufferLength: 40,
-                        maxBufferSize: 20 * 1000 * 1000, // 20 MB — protege RAM mobile
-                        fragLoadingMaxRetry: 6,
-                        fragLoadingRetryDelay: 500,
-                    });
-                    hls.loadSource(src);
-                    hls.attachMedia(videoEl);
-                    hls.on(Hls.Events.MANIFEST_PARSED, () => videoEl.play().catch(() => {}));
-                    hls.on(Hls.Events.ERROR, (_, data) => {
-                        if (!data.fatal) return;
-                        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
-                        else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
-                        else { hls.destroy(); videoEl.src = src; videoEl.play().catch(() => {}); }
-                    });
-                    videoEl._hls = hls; // referência para destruir ao fechar modal
-                } else if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {
-                    // HLS nativo — Safari / iOS
-                    videoEl.src = src;
-                    videoEl.play().catch(() => {});
-                } else {
-                    // Fallback MP4 direto
-                    videoEl.src = src;
-                    videoEl.play().catch(() => {});
-                }
-            });
-        }
-        // ─────────────────────────────────────────────────────────────────────────
 
         let usuario = null;
         let token = localStorage.getItem('token');
         let boloes = [];
         let compraAtual = { bolao: null, quantidade: 1 };
         let polling = null;
+
+        // Inicializa players HLS (novos vídeos) e fallback MP4 (vídeos antigos)
+        function initHlsPlayers() {
+            document.querySelectorAll('.hls-player').forEach(video => {
+                if (video.hlsInitialized) return;
+                const src = video.dataset.hlsSrc;
+                if (!src) return;
+                if (src.endsWith('.m3u8') && Hls.isSupported()) {
+                    const hls = new Hls({
+                        startLevel: -1,
+                        capLevelToPlayerSize: true
+                    });
+                    hls.loadSource(src);
+                    hls.attachMedia(video);
+                    video.hls = hls;
+                } else {
+                    video.src = src;
+                }
+                video.hlsInitialized = true;
+            });
+        }
 
         document.addEventListener('DOMContentLoaded', function() {
             token = localStorage.getItem('token');
@@ -1152,15 +1042,14 @@
                 const vendidos = bolao.vendidos || 100;
 
                 let mediaHTML = '';
-                if (bolao.video_url) {
+                const isMobile = isMobileViewport();
+
+                if (!isMobile && bolao.video_url) {
                     if (isYouTubeUrl(bolao.video_url)) {
                         const embedUrl = getYouTubeEmbedUrl(bolao.video_url);
-                        // ← MODIFICADO: adicionado loading="lazy" ao iframe
-                        mediaHTML = `<iframe class="youtube-embed" src="${embedUrl}" frameborder="0" allowfullscreen loading="lazy"></iframe>`;
+                        mediaHTML = `<iframe class="youtube-embed" src="${embedUrl}" frameborder="0" allowfullscreen></iframe>`;
                     } else {
-                        // ← MODIFICADO: era <video class="hls-player" preload="metadata">
-                        //   agora é click-to-play (preload="none", zero bytes até o clique)
-                        mediaHTML = buildVideoWrapperHTML(bolao.video_url, 'video-wrapper');
+                        mediaHTML = `<video class="imagem-bolao hls-player" data-hls-src="${bolao.video_url}" controls preload="metadata"></video>`;
                     }
                 } else if (bolao.imagem_url) {
                     mediaHTML = `<img src="${bolao.imagem_url}" alt="${bolao.nome}" class="imagem-bolao" loading="lazy">`;
@@ -1189,8 +1078,7 @@
                 grid.appendChild(card);
             });
 
-            // ← MODIFICADO: era initHlsPlayers() — agora registra click-to-play
-            grid.querySelectorAll('.video-wrapper[data-hls-src]').forEach(el => criarVideoPlayer(el));
+            initHlsPlayers();
         }
 
         function verDetalhes(bolao) {
@@ -1198,15 +1086,16 @@
             let detalhesHTML = '';
             let mediaHTML = '';
             let containerClass = 'container-imagem-detalhes';
+            const isMobile = isMobileViewport();
 
             const hasImage = bolao.imagem_url && 
                              typeof bolao.imagem_url === 'string' && 
                              bolao.imagem_url.trim() !== '' &&
                              bolao.imagem_url !== 'null' &&
                              bolao.imagem_url !== 'undefined' &&
-                             !bolao.imagem_url.includes('default.jpg');
-                             
-            const hasVideo = bolao.video_url && 
+                             (isMobile || !bolao.imagem_url.includes('default.jpg'));
+                              
+            const hasVideo = !isMobile && bolao.video_url && 
                             typeof bolao.video_url === 'string' && 
                             bolao.video_url.trim() !== '' &&
                             bolao.video_url !== 'null' &&
@@ -1225,9 +1114,7 @@
                         const embedUrl = getYouTubeEmbedUrl(bolao.video_url);
                         mediaHTML += `<iframe class="youtube-embed imagem-detalhes" src="${embedUrl}" frameborder="0" allowfullscreen></iframe>`;
                     } else {
-                        // ← MODIFICADO: era <video class="imagem-detalhes hls-player" preload="metadata">
-                        //   agora é click-to-play no modal
-                        mediaHTML += buildVideoWrapperHTML(bolao.video_url, 'video-detalhes-wrapper');
+                        mediaHTML += `<video class="imagem-detalhes hls-player" data-hls-src="${bolao.video_url}" controls preload="metadata"></video>`;
                     }
                 }
                 mediaHTML += '</div>';
@@ -1244,23 +1131,11 @@
             }
 
             document.getElementById('detalhes-conteudo').innerHTML = detalhesHTML;
-
-            // ← MODIFICADO: era initHlsPlayers() — agora registra click-to-play no modal
-            const vw = document.querySelector('#detalhes-conteudo .video-detalhes-wrapper[data-hls-src]');
-            if (vw) criarVideoPlayer(vw);
-
+            initHlsPlayers();
             document.getElementById('modal-detalhes').classList.add('active');
         }
 
         function fecharModalDetalhes() {
-            // ← MODIFICADO: destrói HLS e libera recursos ao fechar o modal
-            const videoEl = document.querySelector('#detalhes-conteudo video');
-            if (videoEl) {
-                if (videoEl._hls) { videoEl._hls.destroy(); videoEl._hls = null; }
-                videoEl.pause();
-                videoEl.removeAttribute('src');
-                videoEl.load();
-            }
             document.getElementById('modal-detalhes').classList.remove('active');
         }
 
