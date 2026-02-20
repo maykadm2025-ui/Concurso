@@ -184,7 +184,14 @@ def release_db_connection(conn):
 # FUNÇÕES DE UPLOAD PARA SUPABASE - COM SUPORTE A HLS
 # ============================================
 def generate_hls(file_content, orig_extension, unique_id, folder):
-    """Converte vídeo para HLS e faz upload dos segmentos + playlist"""
+    """
+    Converte vídeo para HLS com DUAS qualidades para evitar travamento no mobile:
+      - 360p (~400 kbps) → mobile / 3G  (começa aqui sempre)
+      - 720p (~1500 kbps) → desktop / WiFi (sobe automaticamente se a banda permitir)
+
+    O player (hls.js com startLevel:0) inicia em 360p e faz upgrade para 720p
+    conforme a conexão, sem intervenção do usuário.
+    """
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             input_path = os.path.join(tmpdir, f"input{orig_extension}")
@@ -193,39 +200,104 @@ def generate_hls(file_content, orig_extension, unique_id, folder):
 
             hls_dir = os.path.join(tmpdir, "hls")
             os.makedirs(hls_dir, exist_ok=True)
-            m3u8_path = os.path.join(hls_dir, "index.m3u8")
 
-            cmd = [
+            # ----------------------------------------------------------
+            # Rendição 360p — mobile / conexões lentas
+            # baseline + level 3.0 = compatibilidade máxima em Android antigo
+            # -ac 1 (mono) reduz ainda mais o tamanho do áudio
+            # ----------------------------------------------------------
+            cmd_360 = [
                 "ffmpeg", "-y", "-i", input_path,
+                "-vf", "scale=-2:360",
+                "-c:v", "libx264",
+                "-profile:v", "baseline",
+                "-level", "3.0",
                 "-preset", "veryfast",
+                "-crf", "28",
+                "-b:v", "400k",
+                "-maxrate", "450k",
+                "-bufsize", "900k",
                 "-g", "48",
                 "-sc_threshold", "0",
-                "-c:v", "libx264",
-                "-profile:v", "main",
-                "-crf", "23",
-                "-b:v", "600k",
-                "-maxrate", "650k",
-                "-bufsize", "1200k",
                 "-c:a", "aac",
-                "-b:a", "128k",
-                "-hls_time", "10",
+                "-b:a", "64k",
+                "-ac", "1",
+                "-hls_time", "6",
                 "-hls_playlist_type", "vod",
-                "-hls_segment_filename", os.path.join(hls_dir, "segment%03d.ts"),
-                m3u8_path
+                "-hls_segment_filename", os.path.join(hls_dir, "360p_%03d.ts"),
+                os.path.join(hls_dir, "360p.m3u8")
             ]
 
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                logger.error(f"FFmpeg erro: {result.stderr}")
+            # ----------------------------------------------------------
+            # Rendição 720p — desktop / WiFi
+            # ----------------------------------------------------------
+            cmd_720 = [
+                "ffmpeg", "-y", "-i", input_path,
+                "-vf", "scale=-2:720",
+                "-c:v", "libx264",
+                "-profile:v", "main",
+                "-level", "3.1",
+                "-preset", "veryfast",
+                "-crf", "23",
+                "-b:v", "1500k",
+                "-maxrate", "1600k",
+                "-bufsize", "3000k",
+                "-g", "48",
+                "-sc_threshold", "0",
+                "-c:a", "aac",
+                "-b:a", "128k",
+                "-hls_time", "6",
+                "-hls_playlist_type", "vod",
+                "-hls_segment_filename", os.path.join(hls_dir, "720p_%03d.ts"),
+                os.path.join(hls_dir, "720p.m3u8")
+            ]
+
+            # Gera 360p — obrigatório
+            result_360 = subprocess.run(cmd_360, capture_output=True, text=True)
+            if result_360.returncode != 0:
+                logger.error(f"FFmpeg 360p erro: {result_360.stderr[-500:]}")
                 return None
 
+            # Gera 720p — opcional (se falhar, continua só com 360p)
+            result_720 = subprocess.run(cmd_720, capture_output=True, text=True)
+            has_720 = result_720.returncode == 0
+            if not has_720:
+                logger.warning(f"FFmpeg 720p falhou, continuando só com 360p: {result_720.stderr[-300:]}")
+
+            # ----------------------------------------------------------
+            # Master playlist — lista as qualidades disponíveis.
+            # O hls.js começa em index 0 (360p) e sobe conforme a banda.
+            # ----------------------------------------------------------
+            master_lines = [
+                "#EXTM3U",
+                "#EXT-X-VERSION:3",
+                "",
+                '#EXT-X-STREAM-INF:BANDWIDTH=464000,RESOLUTION=640x360,CODECS="avc1.42c01e,mp4a.40.2"',
+                "360p.m3u8",
+            ]
+            if has_720:
+                master_lines += [
+                    "",
+                    '#EXT-X-STREAM-INF:BANDWIDTH=1628000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2"',
+                    "720p.m3u8",
+                ]
+
+            master_path = os.path.join(hls_dir, "index.m3u8")
+            with open(master_path, "w") as f:
+                f.write("\n".join(master_lines))
+
+            # Upload de todos os arquivos gerados para o Supabase
             hls_folder = f"{folder}/{unique_id}"
             for file_path in glob.glob(os.path.join(hls_dir, "*")):
                 rel_path = os.path.relpath(file_path, hls_dir)
                 supabase_path = f"{hls_folder}/{rel_path}"
                 with open(file_path, "rb") as f:
                     data = f.read()
-                content_type = "application/vnd.apple.mpegurl" if rel_path.endswith(".m3u8") else "video/mp2t"
+                content_type = (
+                    "application/vnd.apple.mpegurl"
+                    if rel_path.endswith(".m3u8")
+                    else "video/mp2t"
+                )
                 supabase_admin.storage.from_(BUCKET_NAME).upload(
                     supabase_path, data, {"content-type": content_type}
                 )
